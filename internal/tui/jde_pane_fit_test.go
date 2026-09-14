@@ -293,6 +293,9 @@ func jdeScreenFixtures() map[string]func() Screen {
 		"InventoryItemFormScreen":  func() Screen { s := NewInventoryItemFormScreen(Deps{}, ""); s.loading = false; return s },
 		"ItemSupplierFormScreen":   func() Screen { s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil); s.loading = false; return s },
 		"LocationFormScreen":       func() Screen { s := NewLocationFormScreen(Deps{}, ""); s.loading = false; return s },
+		// A staff operator's history of an asset with both sources, a costless
+		// row and a logged row under the cursor — the state naming every key.
+		"AssetMaintenanceHistoryScreen": func() Screen { return assetMaintenanceHistoryFixture() },
 		// Past its loading state, on the count form it opens on, with a room
 		// long enough to outrun any pane — a grid that fits is a grid where the
 		// window arithmetic this file exists to check is inert.
@@ -1384,6 +1387,13 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openPicker(tfLocation)
 			return s
 		},
+		"AssetMaintenanceHistoryScreen/not staff":       histFixtureStates()["AssetMaintenanceHistoryScreen/not staff"],
+		"AssetMaintenanceHistoryScreen/work order row":  histFixtureStates()["AssetMaintenanceHistoryScreen/work order row"],
+		"AssetMaintenanceHistoryScreen/empty range":     histFixtureStates()["AssetMaintenanceHistoryScreen/empty range"],
+		"AssetMaintenanceHistoryScreen/filter":          histFixtureStates()["AssetMaintenanceHistoryScreen/filter"],
+		"AssetMaintenanceHistoryScreen/create":          histFixtureStates()["AssetMaintenanceHistoryScreen/create"],
+		"AssetMaintenanceHistoryScreen/create internal": histFixtureStates()["AssetMaintenanceHistoryScreen/create internal"],
+		"AssetMaintenanceHistoryScreen/edit notes":      histFixtureStates()["AssetMaintenanceHistoryScreen/edit notes"],
 	}
 }
 
@@ -2410,6 +2420,28 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 			mk:     func() Screen { return NewServiceStatusScreen(Deps{}) },
 			header: func(s Screen) jdeHeader { h, _ := s.(*ServiceStatusScreen).render(); return h },
 		},
+		// The maintenance history sheet: the list (staff, and the two states its
+		// header changes shape in), the filter, the log-work form in both
+		// performer branches, and the notes edit.
+		"AssetMaintenanceHistoryScreen/viewList": {
+			mk:     func() Screen { return assetMaintenanceHistoryFixture() },
+			header: func(s Screen) jdeHeader { return s.(*AssetMaintenanceHistoryScreen).listHeader() },
+			alsoIn: map[string]func() Screen{
+				"empty range": states["AssetMaintenanceHistoryScreen/empty range"],
+				"not staff":   states["AssetMaintenanceHistoryScreen/not staff"],
+			},
+		},
+		"AssetMaintenanceHistoryScreen/viewFilter": pick("AssetMaintenanceHistoryScreen/filter",
+			func(s Screen) jdeHeader { return s.(*AssetMaintenanceHistoryScreen).filterHeader() }),
+		"AssetMaintenanceHistoryScreen/viewCreate": {
+			mk:     states["AssetMaintenanceHistoryScreen/create"],
+			header: func(s Screen) jdeHeader { return s.(*AssetMaintenanceHistoryScreen).createHeader() },
+			alsoIn: map[string]func() Screen{
+				"create internal": states["AssetMaintenanceHistoryScreen/create internal"],
+			},
+		},
+		"AssetMaintenanceHistoryScreen/viewEdit": pick("AssetMaintenanceHistoryScreen/edit notes",
+			func(s Screen) jdeHeader { return s.(*AssetMaintenanceHistoryScreen).editHeader() }),
 	}
 }
 

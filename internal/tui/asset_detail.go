@@ -365,6 +365,15 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.asset != nil {
 				return s, SwitchTo(WSAssets, NewAssetChecklistsScreen(s.deps, s.assetID, s.asset.Name))
 			}
+		case "H":
+			// Open the maintenance history — what has been done to this machine,
+			// and the backdated log staff type in from invoices. Uppercase H for
+			// the sibling-surface convention the other uppercase letters here
+			// follow; always available so an asset with no history yet can have
+			// its first record logged.
+			if s.asset != nil {
+				return s, SwitchTo(WSAssets, NewAssetMaintenanceHistoryScreen(s.deps, s.assetID, s.asset.Name))
+			}
 		case "L":
 			// Open the interlock: lock / unlock / disable / enable. Uppercase L
 			// for the sibling-surface convention the other four uppercase letters
@@ -780,6 +789,7 @@ func (s *AssetDetailScreen) barFor(scrolls bool) proseBar {
 		proseBarItem{Keys: []string{"M"}, Hint: "M meters"},
 		proseBarItem{Keys: []string{"D"}, Hint: "D documents"},
 		proseBarItem{Keys: []string{"K"}, Hint: "K checklists"},
+		proseBarItem{Keys: []string{"H"}, Hint: "H history"},
 		proseBarItem{Keys: []string{"S"}, Hint: "S parts"},
 		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
 		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
@@ -831,6 +841,7 @@ func (s *AssetDetailScreen) loadBar() proseBar {
 			proseBarItem{Keys: []string{"M"}, Hint: "M meters"},
 			proseBarItem{Keys: []string{"D"}, Hint: "D documents"},
 			proseBarItem{Keys: []string{"K"}, Hint: "K checklists"},
+			proseBarItem{Keys: []string{"H"}, Hint: "H history"},
 			proseBarItem{Keys: []string{"S"}, Hint: "S parts"},
 			proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
 		)

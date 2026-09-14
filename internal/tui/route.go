@@ -79,6 +79,8 @@ func workspaceSurfaces(ws Workspace) []navSurface {
 		return []navSurface{
 			{"PM board", func(d Deps) Screen { return NewPMBoardScreen(d) }},
 			{"PM items", func(d Deps) Screen { return NewMaintenanceItemsScreen(d) }},
+			{"PM due", func(d Deps) Screen { return NewPMDueScreen(d) }},
+			{"Maintenance rollup", func(d Deps) Screen { return NewMaintenanceRollupScreen(d) }},
 			{"Vendor work orders", func(d Deps) Screen { return NewVendorWorkOrderListScreen(d) }},
 			{"Vendors", func(d Deps) Screen { return NewVendorsScreen(d) }},
 		}

@@ -994,6 +994,27 @@ touching the flow:
 enable/disable contract; `internal/tui/asset_interlock.go` owns the terminal
 flow. Read those before changing either side.
 
+### PM due, bulk work-order generation and the backdated record log
+
+`internal/omsapi/maintenance_rollup.go` owns the wire contract (recorded
+fixtures: `internal/omsapi/testdata/maintenance_*.json`); `internal/tui/pm_due.go`,
+`maintenance_rollup.go` and `asset_maintenance_history.go` own the flows and
+carry the full reasoning. What bites if forgotten:
+
+- **"Due this week" is a rolling seven days that INCLUDES the past** (overdue and
+  never-completed items), and the month list is a superset of the week's. The
+  dashboard's cost periods are calendar periods. Same words, different windows.
+- **Bulk generation is the SERVER's choice of items.** It ignores its body,
+  skips items with an `open`/`in_progress` work order and answers only a count,
+  so never select rows for it client-side or read fewer-than-due as a failure.
+- **A maintenance RECORD changes nothing else**: no PM item's last-completed
+  date, no work order, no dashboard cost. Only `historical` history rows are
+  records; `workorder` rows carry a work order's id.
+- **Record writes follow the WEB's gate (staff), not the server's** (staff,
+  Logistics, any SIG admin), and edit only `notes`, as the web does. The web's
+  internal-staff lookup calls a route OMS does not serve; this client resolves
+  an exact username through `/api/membership/users/` instead.
+
 ## The receiving flow is driven off ONE fetch, and the server decides
 
 `internal/omsapi/po_receiving.go` carries the contract note and

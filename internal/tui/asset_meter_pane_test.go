@@ -197,7 +197,7 @@ func TestAssetDetail_TheFooterNamesMetersAndDocuments(t *testing.T) {
 	s.asset = &omsapi.Asset{ID: "a1", Name: assetMeterFixtureAsset}
 	s.terminalHeight = 30
 	view := stripANSI(s.View())
-	for _, want := range []string{"M meters", "D documents"} {
+	for _, want := range []string{"M meters", "D documents", "H history"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("the asset footer does not name %q:\n%s", want, view)
 		}
@@ -211,6 +211,7 @@ func TestAssetDetail_TheFooterNamesMetersAndDocuments(t *testing.T) {
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
 	for key, want := range map[string]string{
 		"M": "*tui.AssetMetersScreen", "D": "*tui.AssetDocumentsScreen",
+		"H": "*tui.AssetMaintenanceHistoryScreen",
 	} {
 		scr := NewAssetDetailScreen(deps, "a1")
 		scr.loading = false
