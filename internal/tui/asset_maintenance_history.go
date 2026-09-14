@@ -784,20 +784,26 @@ func (s *AssetMaintenanceHistoryScreen) openCreate() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+func (s *AssetMaintenanceHistoryScreen) saveDecisionOffered() bool {
+	return !s.saving
+}
+
 func (s *AssetMaintenanceHistoryScreen) createBar() []actionBarItem {
 	items := []actionBarItem{}
-	if !s.saving {
-		items = append(items, actionBarItem{"Enter", "Save"})
+	if s.saveDecisionOffered() {
+		items = append(items, actionBarItem{"Enter", "Save"}, actionBarItem{"Esc", "Cancel"})
 	}
-	return append(items, actionBarItem{"Esc", "Cancel"}, actionBarItem{"UP/DN", "Fields"}, actionBarItem{"←→", "Choose"})
+	return append(items, actionBarItem{"UP/DN", "Fields"}, actionBarItem{"←→", "Choose"})
 }
 
 func (s *AssetMaintenanceHistoryScreen) updateCreate(m tea.KeyMsg) (Screen, tea.Cmd) {
 	id := s.createFocusID()
 	switch m.String() {
 	case "esc":
-		s.phase, s.errMsg = histPhaseList, ""
-		s.blurAll()
+		if s.saveDecisionOffered() {
+			s.phase, s.errMsg = histPhaseList, ""
+			s.blurAll()
+		}
 		return s, nil
 	case "tab", "down", "shift+tab", "up":
 		delta := 1
@@ -830,7 +836,7 @@ func (s *AssetMaintenanceHistoryScreen) updateCreate(m tea.KeyMsg) (Screen, tea.
 			return s, nil
 		}
 	case "enter":
-		if s.saving {
+		if !s.saveDecisionOffered() {
 			return s, nil
 		}
 		return s, s.submitCreate()
@@ -1022,8 +1028,8 @@ func (s *AssetMaintenanceHistoryScreen) openEdit(row omsapi.MaintenanceHistoryEn
 }
 
 func (s *AssetMaintenanceHistoryScreen) editBar() []actionBarItem {
-	if s.saving {
-		return []actionBarItem{{"Esc", "Cancel"}}
+	if !s.saveDecisionOffered() {
+		return nil
 	}
 	return []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}}
 }
@@ -1031,11 +1037,13 @@ func (s *AssetMaintenanceHistoryScreen) editBar() []actionBarItem {
 func (s *AssetMaintenanceHistoryScreen) updateEdit(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "esc":
-		s.phase, s.errMsg = histPhaseList, ""
-		s.blurAll()
+		if s.saveDecisionOffered() {
+			s.phase, s.errMsg = histPhaseList, ""
+			s.blurAll()
+		}
 		return s, nil
 	case "enter":
-		if s.saving {
+		if !s.saveDecisionOffered() {
 			return s, nil
 		}
 		s.saving, s.errMsg = true, ""

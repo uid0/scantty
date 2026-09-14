@@ -351,6 +351,51 @@ func TestAssetHistory_LogsBackdatedWorkAndKeepsItOnARefusal(t *testing.T) {
 	}
 }
 
+func TestAssetHistory_EscIsInertAndUnnamedWhileSaving(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func() (*AssetMaintenanceHistoryScreen, []actionBarItem)
+	}{
+		{name: "create", start: func() (*AssetMaintenanceHistoryScreen, []actionBarItem) {
+			s := assetMaintenanceHistoryFixture()
+			s.openCreate()
+			s.inputs[histFieldTitle].SetValue("Trunnion lubrication")
+			s.inputs[histFieldDesc].SetValue("Cleaned and greased trunnions.")
+			next, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if cmd == nil {
+				t.Fatal("create did not start a save")
+			}
+			s = next.(*AssetMaintenanceHistoryScreen)
+			return s, s.createBar()
+		}},
+		{name: "edit", start: func() (*AssetMaintenanceHistoryScreen, []actionBarItem) {
+			s := assetMaintenanceHistoryFixture()
+			row, _ := s.addressed()
+			s.openEdit(row)
+			next, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if cmd == nil {
+				t.Fatal("edit did not start a save")
+			}
+			s = next.(*AssetMaintenanceHistoryScreen)
+			return s, s.editBar()
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, bar := tt.start()
+			phase := s.phase
+			if !s.saving || barHas(bar, "Esc", "Cancel") {
+				t.Fatalf("saving=%v bar=%v", s.saving, bar)
+			}
+			next, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			s = next.(*AssetMaintenanceHistoryScreen)
+			if cmd != nil || s.phase != phase || !s.saving {
+				t.Fatalf("Esc while saving: cmd=%v phase=%d saving=%v", cmd != nil, s.phase, s.saving)
+			}
+		})
+	}
+}
+
 // INTERNAL STAFF IS RESOLVED BY AN EXACT USERNAME, not by the directory's
 // substring search — and a name matching nobody never reaches the record write.
 func TestAssetHistory_InternalStaffIsAnExactUsername(t *testing.T) {
