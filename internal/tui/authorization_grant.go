@@ -152,7 +152,7 @@ func (s *AuthorizationGrantScreen) loadRefData() tea.Cmd {
 		if err != nil {
 			return authGrantRefLoadedMsg{err: err}
 		}
-		users, err := deps.OMS.ListAllUsers(ctx)
+		users, err := deps.OMS.ListAllUsers(ctx, nil)
 		if err != nil {
 			return authGrantRefLoadedMsg{err: err}
 		}

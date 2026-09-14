@@ -168,6 +168,21 @@ func TestPMDue_GeneratesWhatIsDueAndStatesTheServersCount(t *testing.T) {
 	}
 }
 
+func TestPMDue_RefreshIsSuppressedWhileGenerationIsPending(t *testing.T) {
+	s := proseBarPress(pmDueFixture(1, 0), "W", "y").(*PMDueScreen)
+	if !s.generating {
+		t.Fatal("generation is not pending")
+	}
+	next, cmd := s.Update(poRuneKey("r"))
+	s = next.(*PMDueScreen)
+	if cmd != nil || s.loading {
+		t.Fatalf("refresh while generating: cmd=%v loading=%v", cmd != nil, s.loading)
+	}
+	if s.proseBar().names("r") {
+		t.Fatalf("the inert refresh key is named on the bar: %q", s.proseBar().hint())
+	}
+}
+
 // A REFUSED GENERATION IS THE SERVER'S SENTENCE, and nothing is claimed as made.
 func TestPMDue_ARefusedGenerationShowsTheServersSentence(t *testing.T) {
 	fake := newRollupFake(t)
@@ -374,6 +389,28 @@ func TestAssetHistory_InternalStaffIsAnExactUsername(t *testing.T) {
 	}
 	if screen.phase != histPhaseList || screen.note != "work logged" {
 		t.Errorf("after a landed save: phase %d note %q", screen.phase, screen.note)
+	}
+}
+
+func TestAssetHistory_InternalStaffExactMatchCanBeOnLaterPage(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = w.Write([]byte(`{"count":2,"next":"/api/membership/users/?page=2","previous":null,"results":[{"id":7,"username":"labstaff2"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"count":2,"next":null,"previous":"/api/membership/users/?page=1","results":[{"id":1,"username":"labstaff"}]}`))
+	}))
+	defer srv.Close()
+
+	id, err := histResolveUser(context.Background(), Deps{OMS: omsapi.New(srv.URL)}, "labstaff")
+	if err != nil || id != 1 {
+		t.Fatalf("resolved id=%d err=%v, want page-two user 1", id, err)
+	}
+	if len(queries) != 2 || !strings.Contains(queries[0], "search=labstaff") || !strings.Contains(queries[1], "search=labstaff") {
+		t.Fatalf("directory queries = %v; search must survive pagination", queries)
 	}
 }
 

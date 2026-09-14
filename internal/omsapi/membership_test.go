@@ -267,7 +267,7 @@ func TestListAllUsers_PagesThrough(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	users, err := c.ListAllUsers(context.Background())
+	users, err := c.ListAllUsers(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListAllUsers: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestListAllUsers_FallsBackToAPIRoot(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	users, err := c.ListAllUsers(context.Background())
+	users, err := c.ListAllUsers(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListAllUsers fallback: %v", err)
 	}

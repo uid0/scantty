@@ -148,7 +148,7 @@ func (s *SIGMembersScreen) loadUsers() tea.Cmd {
 	deps := s.deps
 	ctx := s.ctx()
 	return func() tea.Msg {
-		users, err := deps.OMS.ListAllUsers(ctx)
+		users, err := deps.OMS.ListAllUsers(ctx, nil)
 		return sigUsersLoadedMsg{users: users, err: err}
 	}
 }

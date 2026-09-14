@@ -918,11 +918,11 @@ func (e histNoSuchUser) Error() string {
 // names and email, so the first result is not the answer; only a row whose
 // username IS what was typed is.
 func histResolveUser(ctx context.Context, deps Deps, username string) (int, error) {
-	page, err := deps.OMS.ListUsers(ctx, url.Values{"search": {username}})
+	users, err := deps.OMS.ListAllUsers(ctx, url.Values{"search": {username}})
 	if err != nil {
 		return 0, err
 	}
-	for _, u := range page.Results {
+	for _, u := range users {
 		if u.Username == username {
 			return u.ID, nil
 		}

@@ -183,6 +183,10 @@ func (s *PMDueScreen) generateOffered() bool {
 	return !s.loading && s.loadErr == "" && s.weekCount > 0 && !s.generating
 }
 
+func (s *PMDueScreen) refreshOffered() bool {
+	return !s.generating
+}
+
 func (s *PMDueScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -238,8 +242,10 @@ func (s *PMDueScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor--
 			}
 		case "r":
-			s.loading = true
-			return s, s.load()
+			if s.refreshOffered() {
+				s.loading = true
+				return s, s.load()
+			}
 		case "enter":
 			if row, ok := s.addressed(); ok {
 				return s, SwitchTo(WSMaintenance, NewMaintenanceItemDetailScreen(s.deps, row.item.ID))
@@ -327,7 +333,10 @@ func (s *PMDueScreen) bar(rows int) proseBar {
 	if s.generateOffered() {
 		out = append(out, proseBarItem{Keys: []string{"W"}, Hint: "W generate due WOs"})
 	}
-	return append(out, proseBarRefresh, proseBarEsc)
+	if s.refreshOffered() {
+		out = append(out, proseBarRefresh)
+	}
+	return append(out, proseBarEsc)
 }
 
 // ceilingBar is the tallest shape the list's bar takes — every segment on — so
