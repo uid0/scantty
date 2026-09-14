@@ -994,6 +994,15 @@ touching the flow:
 enable/disable contract; `internal/tui/asset_interlock.go` owns the terminal
 flow. Read those before changing either side.
 
+### Fixture refills
+
+`internal/omsapi/fixtures.go` owns the measured contract and
+`internal/tui/fixture_refills.go` the screens; `NewFixtureDetailScreen` is what
+a scanned fixture label should open. Two facts are invisible from the web and
+both destroy something: on `resolve` an EMPTY `notes` key erases the reporter's
+note (only an absent key keeps it), and `resolve_all` closes whatever is pending
+when it ARRIVES, overwriting every one of those notes when notes are sent.
+
 ## The receiving flow is driven off ONE fetch, and the server decides
 
 `internal/omsapi/po_receiving.go` carries the contract note and

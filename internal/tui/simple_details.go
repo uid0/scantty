@@ -132,6 +132,12 @@ func (s *LocationDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.loc != nil {
 				return s, SwitchTo(WSInventory, NewLocationProblemsScreen(s.deps, s.loc.ID, s.loc.Name))
 			}
+		case "f":
+			// The fixtures installed here (web LocationFixturesList), each of
+			// which opens its refill requests.
+			if s.loc != nil {
+				return s, SwitchTo(WSInventory, NewLocationFixturesScreen(s.deps, s.loc.ID, s.loc.Name))
+			}
 		case "c":
 			// Count the whole room (web /inventory/locations/:id/reconcile).
 			// Lowercase c is free in the global hotkey map, so it falls through
@@ -246,7 +252,7 @@ func (s *LocationDetailScreen) View() string {
 	// continuation, which is the same folder every other legend in this program
 	// goes through (AGENTS.md).
 	b.WriteString(StyleMuted.Render(strings.Join(
-		pickerWrap("c count · p problems · g gen-QR · E edit · x delete · r refresh · esc back",
+		pickerWrap("c count · p problems · f fixtures · g gen-QR · E edit · x delete · r refresh · esc back",
 			pickerPaneWidth), "\n")))
 	return b.String()
 }

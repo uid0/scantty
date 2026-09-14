@@ -56,6 +56,9 @@ func workspaceSurfaces(ws Workspace) []navSurface {
 			{"Kits", func(d Deps) Screen { return NewKitListScreen(d) }},
 			{"Categories", func(d Deps) Screen { return NewCategoryListScreen(d) }},
 			{"Locations", func(d Deps) Screen { return NewLocationListScreen(d) }},
+			// The pending refill requests across every fixture: the queue the web
+			// has no page for (fixture_refills.go).
+			{"Fixture refills", func(d Deps) Screen { return NewFixtureRefillQueueScreen(d) }},
 			{"Suppliers", func(d Deps) Screen { return NewSupplierListScreen(d) }},
 		}
 	case WSPurchasing:
