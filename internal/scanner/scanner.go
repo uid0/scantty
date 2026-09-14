@@ -122,15 +122,14 @@ func ParseOMSURL(raw string) (*URLTarget, error) {
 	case len(parts) >= 3 && parts[0] == "inventory" && parts[1] == "items":
 		t.Kind = "item"
 		t.ResourceID = parts[2]
+	case len(parts) >= 2 && parts[0] == "scan":
+		// The short form every OMS QR generator PRINTS. See scanPathTarget.
+		t.Kind, t.ResourceID = scanPathTarget(parts[1:])
 	case len(parts) >= 3 && parts[0] == "inventory" && parts[1] == "scan":
-		// /inventory/scan/<itemId> or /inventory/scan/asset/<id> etc.
-		if len(parts) == 3 {
-			t.Kind = "code"
-			t.ResourceID = parts[2]
-		} else {
-			t.Kind = parts[2]
-			t.ResourceID = parts[3]
-		}
+		// /inventory/scan/<itemId> or /inventory/scan/asset/<id> etc. — the
+		// long form the web redirects the short one to, and the one OMS's own
+		// dispatcher parses.
+		t.Kind, t.ResourceID = scanPathTarget(parts[2:])
 	case len(parts) >= 2 && parts[0] == "assets":
 		t.Kind = "asset"
 		t.ResourceID = parts[1]
@@ -160,6 +159,54 @@ func ParseOMSURL(raw string) (*URLTarget, error) {
 		t.ResourceID = strings.Join(parts, "/")
 	}
 	return t, nil
+}
+
+// scanTypeKinds maps the <type> segment of an OMS scan URL to the kind a
+// target is routed by. The kinds are the DISPATCHER's `target_type` spellings
+// (`scanner/resolvers._parse_scan_url`'s type_map, plus `project_storage_stint`),
+// so a printed label and a dispatcher-resolved code for the same record land on
+// the same arm of the scan screen rather than on two spellings of one fact —
+// `donation-item` in a path is `donation_item` on the wire.
+//
+// The set is what OMS PRINTS and ROUTES, read at uid0/openmakersuite main:
+//
+//   - `inventory/utils/qr_generator.py` and `inventory/services/qr_code_service.py`
+//     emit `/scan/<item_id>`, `/scan/asset/<id>`, `/scan/location/<id>` and
+//     `/scan/project-storage/<stint_id>`;
+//   - `donations/services/qr_code_service.py` emits `/scan/donation-item/<id>`;
+//   - `maker_boxes/services/label_service.py` emits
+//     `/scan/makerbox/<bin_id>/<username>/`;
+//   - `frontend/src/App.tsx` routes all of those plus `/scan/fixture/<id>`,
+//     and redirects each short form to its `/inventory/scan/...` long form
+//     (project storage to `/facilities/project-storage/<stint_id>`).
+//
+// OMS's own `_parse_scan_url` recognises only the long forms and the
+// project-storage short form, so a printed asset or location label sent to the
+// dispatcher comes back unknown. That is why these are parsed HERE: the label
+// already says what it is, and no round trip is needed to read it back.
+var scanTypeKinds = map[string]string{
+	"asset":           "asset",
+	"location":        "location",
+	"fixture":         "fixture",
+	"donation-item":   "donation_item",
+	"project-storage": "project_storage_stint",
+	"makerbox":        "maker_box",
+}
+
+// scanPathTarget reads the segments AFTER `scan` in either scan URL form. A
+// single segment is a bare inventory item (kind "code", the same as it always
+// was for `/inventory/scan/<id>`); two or more are `<type>/<id>`, where a maker
+// box label's trailing username is ignored because the bin is what it names. A
+// type OMS does not print is "unknown" rather than its raw segment, so nothing
+// downstream can mistake a guess for a route.
+func scanPathTarget(rest []string) (kind, id string) {
+	if len(rest) == 1 {
+		return "code", rest[0]
+	}
+	if k, ok := scanTypeKinds[rest[0]]; ok {
+		return k, rest[1]
+	}
+	return "unknown", strings.Join(rest, "/")
 }
 
 func isOMSCode(code string) bool {
