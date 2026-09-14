@@ -260,6 +260,10 @@ func proseLoadScreens() []proseLoadScreen {
 		{name: "asset report", recv: "ReportTableScreen", loaded: "asset report", reload: "r",
 			ownFloor: proseLoadReportFloor,
 			fresh:    func(d Deps) proseBarScreen { return NewAssetReportScreen(d) }},
+		{name: "record checklists", recv: "RecordChecklistsScreen", loaded: "record checklists", reload: "r",
+			fresh: func(d Deps) proseBarScreen {
+				return NewAssetChecklistsScreen(d, "a-1", "SawStop PCS 3HP cabinet saw")
+			}},
 		{name: "reorder queue", recv: "ReorderQueueScreen", loaded: "reorder queue/pending", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewReorderQueueScreen(d) }},
 		// THE PALETTE HAS NO REFRESH KEY, because editing the query IS the refresh:

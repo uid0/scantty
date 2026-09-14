@@ -667,6 +667,15 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.item != nil && s.item.IsSerialized && s.kitRuledOut() {
 				return s, SwitchTo(WSInventory, NewBatchScanSerialsScreen(s.deps, s.item.ID, s.item.Name))
 			}
+		case "K":
+			// The checklists with a step that scans this item, and a run of the one
+			// chosen — the web's item ScanPage offers the same list. Named and
+			// acting for a KIT too, unlike the stock keys: a checklist step may name
+			// a kit like any other item, and the route sends include_kits so a
+			// kit's id resolves (omsapi.ListItemChecklists).
+			if s.item != nil {
+				return s, SwitchTo(WSInventory, NewItemChecklistsScreen(s.deps, s.item.ID, s.item.Name))
+			}
 		case "E":
 			// Edit opens the create/edit form in edit mode. Uppercase E
 			// because lowercase e is a global ForgeKey hotkey.
@@ -859,7 +868,8 @@ func (s *InventoryDetailScreen) bar(scrolls bool) proseBar {
 	}
 	out = append(out,
 		proseBarItem{Keys: []string{"s"}, Hint: "s suppliers"},
-		proseBarItem{Keys: []string{"h"}, Hint: "h history"})
+		proseBarItem{Keys: []string{"h"}, Hint: "h history"},
+		proseBarItem{Keys: []string{"K"}, Hint: "K checklists"})
 	if s.item.IsSerialized && s.kitRuledOut() {
 		out = append(out,
 			proseBarItem{Keys: []string{"i"}, Hint: "i instances"},

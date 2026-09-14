@@ -583,3 +583,55 @@ What they pin: a write's reply carries the events as PREFETCHED before the write
 are hand-built `{"detail", "code"}` bodies while the permission refusal is the
 standardized envelope and the rate limit is `{"error": "<prose>"}`; and a dotted
 username gets the router's HTML page rather than an empty list.
+
+## Checklists a run is started from — per record, and `available/`
+
+| file | request | status | OMS builder |
+|---|---|---|---|
+| `checklists_asset_staff.json` | `GET /api/inventory/assets/{saw}/checklists/` as a **superuser** | **200** | `inventory.views.AssetViewSet.checklists` → `ChecklistListSerializer` |
+| `checklists_asset_member.json` | the same as an **ordinary member** | **200** | same |
+| `checklists_item.json` | `GET /api/inventory/items/{gloves}/checklists/?include_kits=true` | **200** | `InventoryItemViewSet.checklists` |
+| `checklists_item_kit.json` | the same for a **kit** | **200** | same |
+| `checklists_item_kit_without_include_kits.json` | the kit, **without** `include_kits` | **404** | `get_object` through the kit-excluding `get_queryset` |
+| `checklists_location.json` | `GET /api/inventory/locations/1200041/checklists/` | **200** | `LocationViewSet.checklists` |
+| `checklists_location_none.json` | `GET /api/inventory/locations/1200042/checklists/` — a location no step names | **200** | same |
+| `checklists_available_staff.json` | `GET /api/checklists/checklists/available/` as the superuser | **200** | `checklists.views.ChecklistViewSet.available` |
+| `checklists_available_member.json` | the same as the member | **200** | same |
+| `checklists_list_member.json` | `GET /api/checklists/checklists/?is_active=true` as the member | **200** | `ChecklistViewSet.list` |
+| `checklist_start.json` | `POST /api/checklists/checklists/{opening walkthrough}/start/` `{}` as the member | **201** | `ChecklistViewSet.start` |
+| `checklist_start_forbidden.json` | the same against the **private** checklist | **403** | a hand-built `Response({"detail": …})` in the view body |
+| `checklist_start_inactive.json` | the same against the **inactive** checklist, as the superuser | **400** | same |
+
+Recorded 2026-09-14 against OpenMakerSuite remote `main` at commit
+`2a52266331ca0f00ce023fd34cbff66b121b6202` (tree `cd3fd209…`), a clean clone of
+the remote default branch, running on PostgreSQL. The superuser signed in through
+`POST /api/auth/login/`; the member's token was minted with simplejwt's
+`RefreshToken.for_user` because `login_user` refuses an account with no active
+membership, and every endpoint here reads only `request.user`.
+
+The rows were seeded to reach the states the reader filter keeps apart, on ONE
+asset: a PUBLIC active checklist with a step on the asset, the location and the
+gloves item; a PRIVATE active one owned by a SIG the member does not administer,
+with a step on the asset; an INACTIVE public one with a step on the asset; and a
+public one whose only step names a KIT. The location sequence was set to seven
+digits first, so the location pk is the shape a float-formatted id would mangle.
+
+What they pin that a hand-written map does not:
+
+* **Every route answers a bare JSON array**, never a page — none of the four
+  actions paginates.
+* **The reader filter is the server's and a refused checklist is ABSENT.** The
+  staff and member recordings of one asset differ by exactly the private
+  checklist, and neither carries the inactive one. So a list is the set the
+  reader can start.
+* **The management list hides what a member can run.** `checklists_list_member.json`
+  is an empty page while `checklists_available_member.json`, off the same
+  database, holds two — `ChecklistViewSet.get_queryset` answers `none()` for a
+  reader who is not staff, Logistics or a SIG admin.
+* **A kit needs `include_kits`**, or its id is the standardized `not_found`
+  envelope.
+* **`id` is a UUID string, `sig` a number and `step_count` a number** —
+  `step_count` is a `SerializerMethodField`, which spectacular's schema would call
+  a string.
+* **The start's refusals are `{"detail": "<prose>"}` with no `code`**, which
+  `parseError` cannot read and `AsDetailRefusal` recovers.

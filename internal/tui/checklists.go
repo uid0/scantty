@@ -7,13 +7,16 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
-// ChecklistsScreen lists active checklists with their step counts and
-// SIG ownership, plus a panel of recent in-progress runs so an
-// operator can spot resumable work at a glance. The detail-view +
+// ChecklistsScreen lists the active checklists the signed-in reader may run
+// (checklists/available/) with their step counts and SIG ownership, plus a
+// panel of recent in-progress runs so an operator can spot resumable work at a
+// glance. The per-record lists — the checklists one asset, item or location is
+// part of — are RecordChecklistsScreen's. The detail-view +
 // step-scan + finalize flows that complete a checklist run are queued
 // for v2 — this v1 is the list/start surface that the rest will plug
 // into.
@@ -65,11 +68,16 @@ func (s *ChecklistsScreen) load() tea.Cmd {
 	}
 	return func() tea.Msg {
 		out := checklistsLoadedMsg{}
-		page, err := deps.OMS.ListChecklists(ctx, url.Values{"is_active": []string{"true"}})
+		// available/, NOT the management list: that one serves an ordinary
+		// member an empty page while public checklists exist, so this screen
+		// told them there were none. available/ is the set the web's Facilities
+		// checklists page runs from and decides the reader filter itself —
+		// omsapi.ListChecklists carries the recording that shows the difference.
+		rows, err := deps.OMS.ListAvailableChecklists(ctx)
 		if err != nil {
 			return checklistsLoadedMsg{err: err}
 		}
-		out.rows = page.Results
+		out.rows = rows
 		// Recent in-progress runs — silently swallow any error so a stale
 		// JWT doesn't block the rest of the screen.
 		if runs, err := deps.OMS.ListChecklistCompletions(ctx, url.Values{
@@ -113,7 +121,7 @@ func (s *ChecklistsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// in-progress panel will catch up on the next ChecklistsScreen
 		// load.
 		return s, tea.Batch(
-			Status(fmt.Sprintf("started %s · run %s", m.run.ChecklistName, m.run.ID[:8]), StatusOK),
+			Status(fmt.Sprintf("started %s · run %s", m.run.ChecklistName, cellPrefix(m.run.ID, 8)), StatusOK),
 			SwitchTo(WSFacilities, NewChecklistRunScreen(s.deps, m.run.ID)),
 		)
 	case tea.KeyMsg:
@@ -396,19 +404,60 @@ func (s *ChecklistsScreen) completionRow(i int, c omsapi.ChecklistCompletion) st
 // so a multi-byte character straddling the cut drew as a broken glyph. Line by
 // line because a stored newline is a line the window has to count.
 func (s *ChecklistsScreen) checklistRow(i int, r omsapi.ChecklistSummary, cells int) string {
+	return checklistSummaryRow(i == s.cursor, r, cells)
+}
+
+// checklistSummaryRow is one checklist a run can be started from — its name,
+// step count, public flag and owning SIG, and its description under it — shared
+// by the global list and the per-record list (record_checklists.go), so the two
+// surfaces an operator starts a run from draw a checklist the same way.
+//
+// THE HEADER ROW IS BOUNDED AS ASSEMBLED, in a stated give-order: the `[public]`
+// and SIG trailers go first, from the right, with poRowDropMark saying so; only
+// then does the NAME abbreviate; the step count is a fact that never gives. The
+// name is what an operator picks a checklist BY, so it keeps the room — the
+// shared poFitRow gives the other way round (the name down to a floor before any
+// trailer), and on this row that drew "Opening w… (3 steps) [public] · Woodshop
+// SIG". It used to be written whole, so a long checklist or SIG name ran past the
+// pane and clampToBox took the tail unmarked. The highlight's padding is reserved
+// on every row, for the reason item_suppliers.go gives: a row that fits until it
+// is selected is cut on exactly the keypress that selects it.
+func checklistSummaryRow(selected bool, r omsapi.ChecklistSummary, cells int) string {
 	const indent = "    "
 	caret := "  "
-	if i == s.cursor {
+	if selected {
 		caret = "▸ "
 	}
-	header := fmt.Sprintf("%s%s  %s", caret, r.Name, StyleMuted.Render(fmt.Sprintf("(%d steps)", r.StepCount)))
+	steps := fmt.Sprintf("(%d steps)", r.StepCount)
+	if r.StepCount == 1 {
+		steps = "(1 step)"
+	}
+	facts := "  " + StyleMuted.Render(steps)
+	var trailers []string
 	if r.IsPublic {
-		header += "  " + StyleMuted.Render("[public]")
+		trailers = append(trailers, "  "+StyleMuted.Render("[public]"))
 	}
 	if r.SIGName != "" {
-		header += "  " + StyleMuted.Render("· "+r.SIGName)
+		trailers = append(trailers, "  "+StyleMuted.Render("· "+r.SIGName))
 	}
-	if i == s.cursor {
+	// A stored newline in the name is a line the window counts, so the name is
+	// clipped LINE BY LINE (proseClipEachLine's reason) and the facts ride its
+	// last line, where the row has always drawn them.
+	room := cells - StyleSidebarItemActive.GetHorizontalPadding() - lipgloss.Width(caret)
+	name := strings.Split(r.Name, "\n")
+	last := len(name) - 1
+	keep, dropped := len(trailers), ""
+	for keep > 0 && lipgloss.Width(name[last])+lipgloss.Width(facts)+lipgloss.Width(strings.Join(trailers[:keep], ""))+lipgloss.Width(dropped) > room {
+		keep--
+		dropped = poRowDropMark
+	}
+	suffix := facts + strings.Join(trailers[:keep], "") + dropped
+	for i := range name[:last] {
+		name[i] = pickerClip(name[i], room)
+	}
+	name[last] = pickerClip(name[last], room-lipgloss.Width(suffix)) + suffix
+	header := caret + strings.Join(name, "\n")
+	if selected {
 		header = StyleSidebarItemActive.Render(header)
 	}
 	if r.Description == "" {

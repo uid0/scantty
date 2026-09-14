@@ -112,8 +112,81 @@ type ChecklistStepScanRequest struct {
 
 // ListChecklists returns the paginated checklist list. Useful filters:
 // `?is_active=true`, `?sig=<id>`, `?search=<q>`.
+//
+// IT IS THE MANAGEMENT LIST, NOT THE LIST A MEMBER CAN RUN FROM.
+// ChecklistViewSet.get_queryset hands staff, superusers and Logistics every
+// checklist, a SIG admin their own SIGs' checklists, and EVERYONE ELSE
+// `queryset.none()` — so an ordinary signed-in member reads an empty page here
+// while public checklists exist (testdata/checklists_list_member.json, recorded
+// beside checklists_available_member.json off the same database). The terminal
+// used to draw its global checklist list off this endpoint and told such a member
+// "No active checklists." ListAvailableChecklists is what the web runs from.
 func (c *Client) ListChecklists(ctx context.Context, q url.Values) (*Page[ChecklistSummary], error) {
 	return GetPage[ChecklistSummary](ctx, c, "/api/checklists/checklists/", q)
+}
+
+// ListAvailableChecklists returns every checklist the signed-in reader may RUN:
+// the web's Facilities checklists page reads it (checklistsAPI.getAvailableChecklists
+// with no params). ChecklistViewSet.available is AllowAny and decides the set
+// itself — active only; public ones for everybody; plus every other for staff,
+// superusers and Logistics; plus the reader's own SIGs' for a SIG admin — so the
+// client sends no filter and keeps no copy of that rule.
+//
+// A PLAIN JSON ARRAY, NOT A PAGE. The action serializes the queryset directly and
+// never paginates, so decoding it through GetPage would find no `results` and
+// report an empty list.
+func (c *Client) ListAvailableChecklists(ctx context.Context) ([]ChecklistSummary, error) {
+	var out []ChecklistSummary
+	if err := c.Get(ctx, "/api/checklists/checklists/available/", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListAssetChecklists, ListItemChecklists and ListLocationChecklists return the
+// checklists with a STEP that scans that one record — the list the web's scan
+// landing pages offer under "Are you completing a checklist?" (AssetScanPage,
+// ScanPage and LocationScanPage, through assetsAPI.getAssetChecklists and
+// inventoryAPI.getItemChecklists / getLocationChecklists).
+//
+// The three OMS actions (`checklists` on AssetViewSet, InventoryItemViewSet and
+// LocationViewSet) are one body with the step FK changed, AllowAny, and they
+// apply the same reader filter `available/` does: active only, public for
+// everybody, the rest for staff, superusers, Logistics and the owning SIG's
+// admins. A checklist the reader may not run is therefore simply ABSENT, never
+// served and refused — so a list here is the set the reader can start, and the
+// refusal a start can still meet (the checklist changed between the list and the
+// press) comes back from StartChecklist in the server's own words.
+//
+// Each is a plain JSON array, like ListAvailableChecklists. `available/` also
+// takes `asset_id` / `item_id` / `location_id` and filters the same way, but no
+// web page sends them; these per-record routes are what the web calls, and so
+// what this client calls.
+func (c *Client) ListAssetChecklists(ctx context.Context, assetID string) ([]ChecklistSummary, error) {
+	return c.recordChecklists(ctx, fmt.Sprintf("/api/inventory/assets/%s/checklists/", assetID), nil)
+}
+
+// ListItemChecklists sends ?include_kits=true for the reason includeKitsQuery
+// gives: the action resolves the item through InventoryItemViewSet.get_object,
+// whose queryset excludes kits, so without it a KIT's id is a flat 404 here
+// (testdata/checklists_item_kit_without_include_kits.json) — and a checklist step
+// may name a kit like any other item (checklists_item_kit.json is one).
+func (c *Client) ListItemChecklists(ctx context.Context, itemID string) ([]ChecklistSummary, error) {
+	return c.recordChecklists(ctx, fmt.Sprintf("/api/inventory/items/%s/checklists/", itemID), includeKitsValues())
+}
+
+// ListLocationChecklists takes the location's integer pk, the type Location.ID
+// carries, so the path is formatted with %d and never through an `any`.
+func (c *Client) ListLocationChecklists(ctx context.Context, locationID int) ([]ChecklistSummary, error) {
+	return c.recordChecklists(ctx, fmt.Sprintf("/api/inventory/locations/%d/checklists/", locationID), nil)
+}
+
+func (c *Client) recordChecklists(ctx context.Context, path string, q url.Values) ([]ChecklistSummary, error) {
+	var out []ChecklistSummary
+	if err := c.Get(ctx, path, q, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // GetChecklist returns the full detail (with steps) for one checklist.

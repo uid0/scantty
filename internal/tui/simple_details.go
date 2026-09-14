@@ -147,6 +147,12 @@ func (s *LocationDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				return s, SwitchTo(WSInventory,
 					NewLocationReconcileScreen(s.deps, strconv.Itoa(s.loc.ID), s.loc.Name))
 			}
+		case "K":
+			// The checklists with a step that scans this location, and a run of the
+			// one chosen — the web's LocationScanPage offers the same list.
+			if s.loc != nil {
+				return s, SwitchTo(WSInventory, NewLocationChecklistsScreen(s.deps, s.loc.ID, s.loc.Name))
+			}
 		case "g":
 			if s.loc != nil && !s.generating {
 				s.generating = true
@@ -252,7 +258,7 @@ func (s *LocationDetailScreen) View() string {
 	// continuation, which is the same folder every other legend in this program
 	// goes through (AGENTS.md).
 	b.WriteString(StyleMuted.Render(strings.Join(
-		pickerWrap("c count · p problems · f fixtures · g gen-QR · E edit · x delete · r refresh · esc back",
+		pickerWrap("c count · p problems · f fixtures · K checklists · g gen-QR · E edit · x delete · r refresh · esc back",
 			pickerPaneWidth), "\n")))
 	return b.String()
 }

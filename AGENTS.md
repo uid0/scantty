@@ -988,6 +988,20 @@ touching the flow:
   through the WO PATCH), and `WorkOrderAdHocTool.InventoryItem` — the client
   carries it, the form does not offer it, and neither does the web's.
 
+### A checklist run starts from a list the SERVER filters
+
+`internal/omsapi/checklists.go` owns the contract and its recordings;
+`internal/tui/record_checklists.go` is the per-record flow (`K` on the asset,
+item and location sheets). Worth knowing before touching either:
+
+- **Never list runnable checklists off `/api/checklists/checklists/`.** That is
+  the MANAGEMENT list and it serves an ordinary member an empty page while
+  public checklists exist. `checklists/available/` (the global list) and
+  `assets|items|locations/{id}/checklists/` (per record) are what the web runs
+  from, and both apply the reader filter server-side — so a checklist the
+  reader may not start is ABSENT, and nothing here keeps a copy of who may run
+  what. A start's refusals are hand-written `{"detail": …}` (`AsDetailRefusal`).
+
 ### Asset interlock
 
 `internal/omsapi/asset_interlock.go` owns the measured lock/unlock and
