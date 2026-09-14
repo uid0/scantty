@@ -994,27 +994,6 @@ touching the flow:
 enable/disable contract; `internal/tui/asset_interlock.go` owns the terminal
 flow. Read those before changing either side.
 
-### Project-storage enforcement offers what the web offers and relays OMS's refusal
-
-`internal/omsapi/project_storage.go` owns the measured contract for the notice,
-purgatory, by-member and generate-qr endpoints; `internal/tui/project_storage_detail.go`
-owns where the stint sheet offers each. What is worth knowing first:
-
-- **NO KEY IS GATED ON WHO IS SIGNED IN.** OMS decides (notice and purgatory are
-  `is_staff`; by-member and the QR also admit a `Storage Admin` volunteer), the
-  web draws every button for whoever reaches the page, and `Deps.InitialStaff` is
-  a STARTUP snapshot an in-app sign-in never updates — gating on it would hide a
-  warden's keys from a warden who signed in after launch.
-- **A WRITE'S REPLY IS NOT THE STINT TO DRAW.** It carries the audit events as
-  prefetched BEFORE the write and a bare `/media/…` QR path; only the retrieve
-  sends the URL absolute. The sheet re-reads after every write.
-- **by-member cannot route a dotted username** (`[^/.]+`), so `bob.jones` gets the
-  router's HTML 404 — from the web too. The member list says so rather than
-  relaying a 404 that reads as "no such member".
-- **The prose-bar sweep counts a declining toast as acting**, so a bar naming a
-  write key on a state where it only declines passes it. The enforcement keys'
-  biconditional is `TestStintEnforcement_EveryKeyActsExactlyWhereItIsNamed`.
-
 ## The receiving flow is driven off ONE fetch, and the server decides
 
 `internal/omsapi/po_receiving.go` carries the contract note and

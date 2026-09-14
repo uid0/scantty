@@ -21,8 +21,7 @@
 // There is intentionally no edit mode: OMS has no update endpoint for a stint
 // (a PATCH 405s), so amending a stint after intake is not a capability that
 // exists to mirror. Post-intake state changes are the warden lifecycle actions
-// (mark-removed lives on the detail screen; notice / purgatory ride their own
-// parity beads, like reprint did).
+// on the detail screen (notice, purgatory, removal and label/QR actions).
 //
 // Navigation: tab / ↑↓ move between fields, enter saves, esc cancels. The form is
 // a raw-input screen so every key reaches the focused textinput.
