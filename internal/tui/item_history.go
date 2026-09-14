@@ -355,12 +355,11 @@ var itemStockLabels = map[itemStockRowKind]string{
 
 // itemHistoryStockRows merges the three lists into one table, NEWEST FIRST.
 //
-// The change is taken chronologically — each level against the reading before it
-// that HAS a level — and the order within one date is the order the three lists
-// are named in the payload, so a same-day snapshot, count and reorder read
-// top-down as reorder, count, snapshot once reversed. Nothing is merged away: the
-// web chart lets a same-day count overwrite a snapshot, and a table has room for
-// both facts.
+// A change is drawn only between dates that each carry exactly one level. The
+// wire reduces snapshots and counts to dates, so their order within one day is
+// unknowable and cannot support a change on that day or the next level date.
+// Nothing is merged away: the web chart lets a same-day count overwrite a
+// snapshot, and a table has room for both facts.
 func itemHistoryStockRows(h *omsapi.StockHistory) []itemStockRow {
 	if h == nil {
 		return nil
@@ -376,15 +375,29 @@ func itemHistoryStockRows(h *omsapi.StockHistory) []itemStockRow {
 		rows = append(rows, itemStockRow{kind: itemStockReorder, date: e.Date.Format("2006-01-02")})
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].date < rows[j].date })
-	prev, seen := 0, false
-	for i := range rows {
-		if !rows[i].hasLevel {
-			continue
+	prevLevel, prevCount, seen := 0, 0, false
+	for start := 0; start < len(rows); {
+		end := start + 1
+		for end < len(rows) && rows[end].date == rows[start].date {
+			end++
 		}
-		if seen {
-			rows[i].change, rows[i].hasChange = rows[i].level-prev, true
+		levelIndex, levelCount := -1, 0
+		for i := start; i < end; i++ {
+			if rows[i].hasLevel {
+				levelIndex, levelCount = i, levelCount+1
+			}
 		}
-		prev, seen = rows[i].level, true
+		if levelCount == 1 && seen && prevCount == 1 {
+			rows[levelIndex].change = rows[levelIndex].level - prevLevel
+			rows[levelIndex].hasChange = true
+		}
+		if levelCount > 0 {
+			prevCount, seen = levelCount, true
+			if levelCount == 1 {
+				prevLevel = rows[levelIndex].level
+			}
+		}
+		start = end
 	}
 	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
 		rows[i], rows[j] = rows[j], rows[i]

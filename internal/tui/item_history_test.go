@@ -283,3 +283,32 @@ func TestItemHistory_AChangeIsAgainstTheReadingBeforeItThatHasALevel(t *testing.
 		t.Errorf("oldest row = %+v, want no change — there is no reading before it", r)
 	}
 }
+
+func TestItemHistory_SameDayLevelsDoNotInventAChronology(t *testing.T) {
+	day := func(s string) omsapi.DateOnly {
+		d, _ := time.Parse("2006-01-02", s)
+		return omsapi.DateOnly{Time: d}
+	}
+	rows := itemHistoryStockRows(&omsapi.StockHistory{
+		Series: []omsapi.StockHistoryPoint{
+			{Date: day("2026-01-05"), Count: 100},
+			{Date: day("2026-01-12"), Count: 50},
+			{Date: day("2026-01-19"), Count: 60},
+		},
+		CycleCounts: []omsapi.StockHistoryPoint{{Date: day("2026-01-12"), Count: 100}},
+	})
+	if len(rows) != 4 {
+		t.Fatalf("rows = %d, want 4", len(rows))
+	}
+	if r := rows[0]; r.date != "2026-01-19" || r.hasChange {
+		t.Errorf("level after ambiguous date = %+v, want no change", r)
+	}
+	for i := 1; i <= 2; i++ {
+		if r := rows[i]; r.date != "2026-01-12" || r.hasChange {
+			t.Errorf("same-day row %d = %+v, want no change", i, r)
+		}
+	}
+	if r := rows[3]; r.date != "2026-01-05" || r.hasChange {
+		t.Errorf("oldest row = %+v, want no change", r)
+	}
+}
