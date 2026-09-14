@@ -451,3 +451,22 @@ func TestAssetHistory_ARefusedFilterKeepsWhatWasTyped(t *testing.T) {
 		t.Errorf("the list's query moved to %q on a refused filter", screen.query.Since)
 	}
 }
+
+// LEAVING THE FILTER FORM ABANDONS ONLY A FILTER LOAD. A refresh started from
+// the list before Ctrl-F is still the list's answer; dropping it left the sheet
+// reading forever, with nothing on it saying why.
+func TestAssetHistory_LeavingTheFilterKeepsARefreshAlreadyOut(t *testing.T) {
+	s := assetMaintenanceHistoryFixture()
+	next, _ := s.Update(poRuneKey("r"))
+	s = next.(*AssetMaintenanceHistoryScreen)
+	refresh := s.loadSeq
+	next, _ = s.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	s = next.(*AssetMaintenanceHistoryScreen)
+	next, _ = s.Update(histLoadedMsg{history: &omsapi.MaintenanceHistory{Count: 1, TotalCost: "1.00",
+		Results: histFixtureRows(1)}, query: s.query, seq: refresh})
+	s = next.(*AssetMaintenanceHistoryScreen)
+	if s.loading || len(s.rows()) != 1 {
+		t.Fatalf("the refresh's answer was dropped: loading=%v rows=%d", s.loading, len(s.rows()))
+	}
+}

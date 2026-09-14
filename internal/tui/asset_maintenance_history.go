@@ -659,8 +659,14 @@ func (s *AssetMaintenanceHistoryScreen) updateFilter(m tea.KeyMsg) (Screen, tea.
 	case "esc":
 		// Leaving discards nothing that was ever applied: the list still answers
 		// the query shown above it, and the boxes are refilled from it next time.
+		// A FILTER load still out is abandoned, or its answer would re-query the
+		// list behind the operator's back. Only that one: a refresh started from
+		// the list before the form opened is still the list's, and dropping it
+		// would leave the list reading forever.
+		if s.filtering {
+			s.loadSeq++
+		}
 		s.phase, s.filterErr, s.filtering = histPhaseList, "", false
-		s.loadSeq++ // a filter load still out would otherwise land on the list
 		s.blurAll()
 		return s, nil
 	case "tab", "down", "shift+tab", "up":
