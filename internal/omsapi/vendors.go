@@ -45,6 +45,17 @@ func (c *Client) ListVendors(ctx context.Context, q url.Values) (*Page[Vendor], 
 	return GetPage[Vendor](ctx, c, "/api/vendors/vendors/", q)
 }
 
+func (c *Client) ListAllVendors(ctx context.Context, q url.Values) ([]Vendor, error) {
+	var all []Vendor
+	if err := IterPages[Vendor](ctx, c, "/api/vendors/vendors/", q, func(batch []Vendor) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
 // GetVendor fetches a single vendor by UUID.
 func (c *Client) GetVendor(ctx context.Context, id string) (*Vendor, error) {
 	var out Vendor

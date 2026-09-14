@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -411,6 +412,31 @@ func TestAssetHistory_InternalStaffExactMatchCanBeOnLaterPage(t *testing.T) {
 	}
 	if len(queries) != 2 || !strings.Contains(queries[0], "search=labstaff") || !strings.Contains(queries[1], "search=labstaff") {
 		t.Fatalf("directory queries = %v; search must survive pagination", queries)
+	}
+}
+
+func TestAssetHistory_VendorDirectoryHasNoArbitraryPageCap(t *testing.T) {
+	const lastPage = 101
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		var n int
+		_, _ = fmt.Sscan(page, &n)
+		next := "null"
+		if n < lastPage {
+			next = fmt.Sprintf("%q", "/api/vendors/vendors/?page="+fmt.Sprint(n+1))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"count":%d,"next":%s,"previous":null,"results":[{"id":"v-%d","name":"Vendor %d"}]}`, lastPage, next, n, n)
+	}))
+	defer srv.Close()
+
+	s := NewAssetMaintenanceHistoryScreen(Deps{OMS: omsapi.New(srv.URL)}, "a1", "Saw")
+	msg := s.loadVendors()().(histVendorsMsg)
+	if msg.err != nil || len(msg.vendors) != lastPage {
+		t.Fatalf("vendors=%d err=%v", len(msg.vendors), msg.err)
+	}
+	if msg.vendors[lastPage-1].ID != "v-101" {
+		t.Fatalf("last vendor = %+v", msg.vendors[lastPage-1])
 	}
 }
 

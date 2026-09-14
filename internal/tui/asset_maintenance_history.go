@@ -52,7 +52,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -252,17 +251,9 @@ func (s *AssetMaintenanceHistoryScreen) loadVendors() tea.Cmd {
 	s.vendorsLoading, s.vendorsErr = true, ""
 	deps, ctx := s.deps, s.ctx()
 	return func() tea.Msg {
-		var all []omsapi.Vendor
-		for page := 1; page <= 100; page++ {
-			q := url.Values{"page": {strconv.Itoa(page)}}
-			res, err := deps.OMS.ListVendors(ctx, q)
-			if err != nil {
-				return histVendorsMsg{err: err}
-			}
-			all = append(all, res.Results...)
-			if res.Next == nil || *res.Next == "" {
-				break
-			}
+		all, err := deps.OMS.ListAllVendors(ctx, nil)
+		if err != nil {
+			return histVendorsMsg{err: err}
 		}
 		return histVendorsMsg{vendors: all}
 	}
