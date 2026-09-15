@@ -149,3 +149,82 @@ func TestMightBeForgeKeyBadge_SaysNothingAboutRouting(t *testing.T) {
 		}
 	}
 }
+
+// TestParseOMSURL_EveryPrintedScanLabelNamesItsTarget holds the parser to the
+// URLs OMS really PRINTS on a label, transcribed from the generators at
+// uid0/openmakersuite main with the line that builds each one. Every OMS QR
+// generator writes the short `/scan/...` form, and ParseOMSURL had no case for
+// `scan` at all — so every printed item, asset, location, project-storage and
+// donation label parsed as "unknown" and the scan screen opened nothing.
+//
+// The generator rows are the contract; the route rows are the web's own
+// `frontend/src/App.tsx` table for the same prefix, which is what a phone
+// camera opens, and they are here because `/scan/fixture/<id>` is routed and a
+// label reaching it must not be read as a bare item id called "fixture".
+//
+// The kinds are the dispatcher's target_type spellings, so a printed label and
+// a dispatcher-resolved code for the same record reach the same arm.
+func TestParseOMSURL_EveryPrintedScanLabelNamesItsTarget(t *testing.T) {
+	const base = "https://oms.example.org"
+	const itemUUID = "0fa1fe96-f11c-4886-b6ff-4ba87870acb3"
+	for _, tc := range []struct {
+		source   string
+		url      string
+		kind, id string
+	}{
+		// backend/inventory/utils/qr_generator.py
+		{"qr_generator.py:29 item", base + "/scan/" + itemUUID, "code", itemUUID},
+		{"qr_generator.py:81 asset", base + "/scan/asset/12", "asset", "12"},
+		{"qr_generator.py:119 location", base + "/scan/location/7", "location", "7"},
+		// backend/inventory/services/qr_code_service.py
+		{"qr_code_service.py:223 asset", base + "/scan/asset/1000000", "asset", "1000000"},
+		{"qr_code_service.py:255 project storage", base + "/scan/project-storage/PS-0042", "project_storage_stint", "PS-0042"},
+		{"qr_code_service.py:281 item", base + "/scan/" + itemUUID, "code", itemUUID},
+		{"qr_code_service.py:313 location", base + "/scan/location/31", "location", "31"},
+		// backend/donations/services/qr_code_service.py
+		{"donations qr_code_service.py:155 donation item", base + "/scan/donation-item/88", "donation_item", "88"},
+		// backend/maker_boxes/services/label_service.py:94 — trailing slash,
+		// and a path-escaped bin id and username.
+		{"label_service.py:94 maker box", base + "/scan/makerbox/BIN%2004/ada/", "maker_box", "BIN 04"},
+		// frontend/src/App.tsx route with no generator today.
+		{"App.tsx /scan/fixture/:fixtureId", base + "/scan/fixture/5", "fixture", "5"},
+		// The long forms the web redirects to, which were already parsed; the
+		// donation spelling now matches the dispatcher's.
+		{"App.tsx /inventory/scan/:itemId", base + "/inventory/scan/" + itemUUID, "code", itemUUID},
+		{"App.tsx /inventory/scan/asset/:assetId", base + "/inventory/scan/asset/12", "asset", "12"},
+		{"App.tsx /inventory/scan/fixture/:fixtureId", base + "/inventory/scan/fixture/5", "fixture", "5"},
+		{"App.tsx /inventory/scan/donation-item/:itemId", base + "/inventory/scan/donation-item/88", "donation_item", "88"},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			if got := Classify(tc.url); got != KindOMSURL {
+				t.Fatalf("Classify(%q) = %v, want KindOMSURL", tc.url, got)
+			}
+			target, err := ParseOMSURL(tc.url)
+			if err != nil {
+				t.Fatalf("ParseOMSURL(%q): %v", tc.url, err)
+			}
+			if target.Kind != tc.kind || target.ResourceID != tc.id {
+				t.Fatalf("ParseOMSURL(%q) = kind %q id %q, want kind %q id %q",
+					tc.url, target.Kind, target.ResourceID, tc.kind, tc.id)
+			}
+		})
+	}
+}
+
+// TestParseOMSURL_AScanTypeOMSDoesNotPrintIsUnknown keeps a guess from
+// becoming a route: an unrecognised <type> segment is "unknown", never its raw
+// spelling, so no arm downstream can match a word nobody prints.
+func TestParseOMSURL_AScanTypeOMSDoesNotPrintIsUnknown(t *testing.T) {
+	for _, raw := range []string{
+		"https://oms.example.org/scan/widget/9",
+		"https://oms.example.org/inventory/scan/widget/9",
+	} {
+		target, err := ParseOMSURL(raw)
+		if err != nil {
+			t.Fatalf("ParseOMSURL(%q): %v", raw, err)
+		}
+		if target.Kind != "unknown" {
+			t.Errorf("ParseOMSURL(%q).Kind = %q, want unknown", raw, target.Kind)
+		}
+	}
+}

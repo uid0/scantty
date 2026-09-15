@@ -183,9 +183,15 @@ For non-keyboard scanners (raw HID, serial, etc.), point `SCANTTY_SCANNER_SOURCE
 
 The scan workspace sends non-URL codes to OMS's scanner dispatcher, which can
 resolve barcodes, asset tags, location codes, and other server-known identifiers.
-OMS URLs carry their destination directly. Access badges can overlap barcode
-shapes, so they are never claimed locally; an unmatched 8–10 digit scan explains
-that badge lookup is not available yet (see Roadmap).
+OMS URLs carry their destination directly, including the short `/scan/...` URLs
+printed on item, asset, location, project-storage, donation-item, and maker-box
+QR labels. Items, assets, locations, project-storage stints, work orders, and
+vendor work orders open their existing detail screens. A fixture, donation-item,
+or maker-box label is still identified, but the scan workspace warns that
+ScanTTY has no detail screen for it instead of reporting a successful open.
+Access badges can overlap barcode shapes, so they are never claimed locally; an
+unmatched 8–10 digit scan explains that badge lookup is not available yet (see
+Roadmap).
 
 ## Project layout
 

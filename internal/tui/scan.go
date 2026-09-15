@@ -25,6 +25,9 @@ type scanResult struct {
 	Lookup    *omsapi.LookupResult
 	URLTarget *scanner.URLTarget
 	Err       string
+	// NoScreen is set when the scan identified a record ScanTTY has no screen
+	// for (noScreenNote), so the history row can say so rather than tick it.
+	NoScreen  string
 	Timestamp time.Time
 }
 
@@ -91,6 +94,26 @@ func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if m.err != nil {
 			entry.Err = m.err.Error()
 		}
+		// Where the scan goes is decided BEFORE the entry is recorded, because
+		// the history row says whether it opened anything: a row ticked green
+		// over a label nothing could open is the same false success as the
+		// status line beside it.
+		var cmd tea.Cmd
+		var label string
+		switch {
+		case m.urlTarget != nil:
+			cmd = s.navigateToURL(m.urlTarget)
+			label = fmt.Sprintf("scan url → %s %s", m.urlTarget.Kind, m.urlTarget.ResourceID)
+			if cmd == nil {
+				entry.NoScreen = noScreenNote(m.urlTarget.Kind)
+			}
+		case m.err == nil && m.result != nil:
+			cmd = s.navigateToResult(m.result)
+			label = fmt.Sprintf("scan %s → %s %v", m.code, m.result.Type, m.result.ID)
+			if cmd == nil {
+				entry.NoScreen = noScreenNote(m.result.Type)
+			}
+		}
 		s.history = append([]scanResult{entry}, s.history...)
 		if len(s.history) > 8 {
 			s.history = s.history[:8]
@@ -98,25 +121,40 @@ func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		switch {
 		case m.err != nil:
 			return s, Status(fmt.Sprintf("scan %s: %s", m.code, m.err.Error()), StatusError)
-		case m.urlTarget != nil:
-			cmd := s.navigateToURL(m.urlTarget)
-			label := fmt.Sprintf("scan url → %s %s", m.urlTarget.Kind, m.urlTarget.ResourceID)
-			if cmd == nil {
-				return s, Status(label+" (no detail screen yet)", StatusWarn)
-			}
+		case entry.NoScreen != "":
+			return s, Status(label+": "+entry.NoScreen, StatusWarn)
+		case cmd != nil:
 			return s, tea.Batch(Status(label, StatusOK), cmd)
-		case m.result == nil:
-			return s, Status(noMatchNote(m.code), StatusWarn)
 		default:
-			cmd := s.navigateToResult(m.result)
-			label := fmt.Sprintf("scan %s → %s %v", m.code, m.result.Type, m.result.ID)
-			if cmd == nil {
-				return s, Status(label, StatusOK)
-			}
-			return s, tea.Batch(Status(label, StatusOK), cmd)
+			return s, Status(noMatchNote(m.code), StatusWarn)
 		}
 	}
 	return s, nil
+}
+
+// noScreenNote is what a scan says when it identified a record ScanTTY has no
+// screen to open, and it is a WARNING on purpose.
+//
+// Both routes used to end in success regardless: a dispatcher answer the switch
+// had no arm for (a location, a fixture, a donation item, a project-storage
+// stint) was reported as a green `scan X → location 7` with nothing opened, and
+// a URL with no arm said "(no detail screen yet)" even for kinds that HAD one.
+// An operator at the bench reads a green line as "done" and waits for a screen
+// that is not coming. The arms that have a screen now open it; this names the
+// ones that do not, by what the label IS, so the sentence is also a request
+// somebody can file.
+func noScreenNote(kind string) string {
+	switch kind {
+	case "fixture":
+		return "no ScanTTY screen for fixture labels yet"
+	case "donation_item":
+		return "no ScanTTY screen for donation items yet"
+	case "maker_box":
+		return "no ScanTTY screen for maker box labels yet"
+	case "unknown":
+		return "not an OMS label ScanTTY can read"
+	}
+	return "no ScanTTY screen for this yet"
 }
 
 // noMatchNote is what a code the dispatcher could not place says.
@@ -162,7 +200,18 @@ func (s *ScanScreen) navigateToResult(r *omsapi.LookupResult) tea.Cmd {
 		return SwitchTo(WSAssets, NewAssetDetailScreen(s.deps, id))
 	case "work_order":
 		return SwitchTo(WSMaintenance, NewWorkOrderDetailScreen(s.deps, id))
+	// A location is what a location access code resolves to, and it is where a
+	// room count starts, so a scan that named one and opened nothing left the
+	// operator to go and find it by hand.
+	case "location":
+		return SwitchTo(WSInventory, NewLocationDetailScreen(s.deps, id))
+	// The dispatcher's target_id for a stint is its `stint_id` (PS-…), not a
+	// pk, and that is what the detail screen fetches by.
+	case "project_storage_stint":
+		return SwitchTo(WSFacilities, NewProjectStorageDetailScreen(s.deps, id))
 	}
+	// "fixture" and "donation_item" also come back from the dispatcher and have
+	// no screen yet; Update says so through noScreenNote.
 	return nil
 }
 
@@ -184,7 +233,13 @@ func (s *ScanScreen) navigateToURL(target *scanner.URLTarget) tea.Cmd {
 		return SwitchTo(WSInventory, NewSupplierDetailScreen(s.deps, target.ResourceID))
 	case "sig":
 		return SwitchTo(WSSIGs, NewSIGDetailScreen(s.deps, target.ResourceID))
+	case "third_party_work_order":
+		return SwitchTo(WSMaintenance, NewVendorWorkOrderDetailScreen(s.deps, target.ResourceID))
+	case "project_storage_stint":
+		return SwitchTo(WSFacilities, NewProjectStorageDetailScreen(s.deps, target.ResourceID))
 	}
+	// "fixture", "donation_item", "maker_box" and "unknown" have no screen;
+	// Update says so through noScreenNote.
 	return nil
 }
 
@@ -251,9 +306,17 @@ func (s *ScanScreen) View() string {
 		case r.Err != "":
 			b.WriteString(StyleStatusError.Render("✗ "+header) + "\n")
 			b.WriteString("    " + StyleStatusError.Render(r.Err) + "\n")
+		case r.NoScreen != "":
+			b.WriteString(StyleStatusWarn.Render("· "+header) + "\n")
+			b.WriteString("    " + StyleStatusWarn.Render(r.NoScreen) + "\n")
 		case r.Lookup != nil:
 			b.WriteString(StyleStatusOK.Render("✓ "+header) + "\n")
 			b.WriteString(fmt.Sprintf("    %s #%v %s\n", r.Lookup.Type, r.Lookup.ID, r.Lookup.Name))
+		case r.URLTarget != nil:
+			// A label that opened its screen was drawn as "(no match)" here,
+			// because only a dispatcher answer counted as a match.
+			b.WriteString(StyleStatusOK.Render("✓ "+header) + "\n")
+			b.WriteString(fmt.Sprintf("    %s #%s\n", r.URLTarget.Kind, r.URLTarget.ResourceID))
 		default:
 			b.WriteString(StyleStatusWarn.Render("· "+header+" (no match)") + "\n")
 		}
