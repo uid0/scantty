@@ -55,6 +55,14 @@ type ItemSuppliersScreen struct {
 	confirmingDelete bool
 	deleting         bool
 	busy             bool // a set-primary PATCH is in flight
+
+	// stale is the server's refusal of a set-primary or a delete made from rows
+	// this list loaded before somebody else wrote them, held until a load
+	// lands. The rows on the pane ARE that stale copy, so the answer is a
+	// reload the operator asks for — never the write sent again, and above all
+	// never re-sent at the version the refusal reports (omsapi's
+	// item_supplier_version.go says why).
+	stale *omsapi.StaleSupplierLink
 }
 
 type itemSuppliersLoadedMsg struct {
@@ -336,6 +344,9 @@ func (s *ItemSuppliersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		} else {
 			s.loadErr = ""
 			s.rows = m.rows
+			// A landed load IS the reload a refusal asked for, whichever key
+			// fired it: the rows now carry the versions the server holds.
+			s.stale = nil
 		}
 		if s.cursor >= len(s.rows) {
 			s.cursor = 0
@@ -346,6 +357,10 @@ func (s *ItemSuppliersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case itemSupplierDeletedMsg:
 		s.deleting = false
 		s.confirmingDelete = false
+		if refusal, ok := omsapi.AsStaleSupplierLink(m.err); ok {
+			s.stale = refusal
+			return s, Status(refusal.Message, StatusError)
+		}
 		if m.err != nil {
 			return s, Status("delete failed: "+m.err.Error(), StatusError)
 		}
@@ -353,6 +368,10 @@ func (s *ItemSuppliersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, tea.Batch(Status("supplier link removed", StatusOK), s.load())
 	case itemSupplierPrimaryMsg:
 		s.busy = false
+		if refusal, ok := omsapi.AsStaleSupplierLink(m.err); ok {
+			s.stale = refusal
+			return s, Status(refusal.Message, StatusError)
+		}
 		if m.err != nil {
 			return s, Status("set primary failed: "+m.err.Error(), StatusError)
 		}
@@ -434,9 +453,9 @@ func (s *ItemSuppliersScreen) setPrimary() (Screen, tea.Cmd) {
 	s.busy = true
 	deps := s.deps
 	ctx := s.ctx()
-	id := row.ID
+	id, version := row.ID, row.Version
 	return s, func() tea.Msg {
-		_, err := deps.OMS.SetItemSupplierPrimary(ctx, id)
+		_, err := deps.OMS.SetItemSupplierPrimary(ctx, id, version)
 		return itemSupplierPrimaryMsg{err: err}
 	}
 }
@@ -455,9 +474,9 @@ func (s *ItemSuppliersScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.Cmd
 		s.deleting = true
 		deps := s.deps
 		ctx := s.ctx()
-		id := row.ID
+		id, version := row.ID, row.Version
 		return s, func() tea.Msg {
-			return itemSupplierDeletedMsg{err: deps.OMS.DeleteItemSupplier(ctx, id)}
+			return itemSupplierDeletedMsg{err: deps.OMS.DeleteItemSupplier(ctx, id, version)}
 		}
 	case "n", "N", "esc":
 		s.confirmingDelete = false
@@ -541,7 +560,11 @@ func (s *ItemSuppliersScreen) View() string {
 
 	var b strings.Builder
 	if plan.count {
-		b.WriteString(muted(fmt.Sprintf("%d supplier link(s)", len(s.rows))) + "\n")
+		if s.stale != nil {
+			b.WriteString(StyleStatusError.Render(pickerClip(suppliersStaleNote, room)) + "\n")
+		} else {
+			b.WriteString(muted(fmt.Sprintf("%d supplier link(s)", len(s.rows))) + "\n")
+		}
 	}
 
 	// The body is assembled as LINES and then bounded as a whole, because a row
@@ -593,6 +616,21 @@ func (s *ItemSuppliersScreen) View() string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
+
+// suppliersStaleNote stands on the pane after the server refused a set-primary
+// or a delete made from rows it had written since this list loaded them.
+//
+// The server's own sentence goes to the bottom line, whole or marked where it is
+// cut (StatusBar.View), and it is the complete account. That line is a FLASH,
+// though, and an operator who looked away is still looking at a list that is
+// out of date — so the pane keeps the fact for as long as it is true, in the
+// count line's slot: that line is context this frame can spare, and the fact
+// replacing it is the one the rows beneath cannot be read without.
+//
+// Worded for the one row it gets, so what must survive LEADS: "nothing saved"
+// first, then why, then the key — which the bar also names, as `r refresh`.
+// 50 cells, inside the 51 the narrowest pane gives.
+const suppliersStaleNote = "✗ nothing saved: list out of date · r refreshes it"
 
 // indent is the gutter every fact line under a supplier's name sits in. Named
 // because it is spent twice — once as the prefix that is written, once as the
@@ -909,6 +947,18 @@ type ItemSupplierFormScreen struct {
 	saving  bool
 	errMsg  string
 
+	// stale is the server's refusal of a save made from a copy of the link that
+	// somebody else — a person, the lead-time measuring task, or a promotion
+	// that demoted this link — wrote after this form was opened on it. While it
+	// stands the form offers Ctrl-R, which re-reads the link, and withholds
+	// Enter, because the copy's version only ever falls further behind and a
+	// second save of it can only be refused again. Nothing here ever re-sends
+	// with the version the refusal reports: that is the overwrite the token
+	// exists to stop (omsapi's item_supplier_version.go).
+	stale *omsapi.StaleSupplierLink
+	// reloading is the Ctrl-R read in flight.
+	reloading bool
+
 	suppliers []omsapi.Supplier
 
 	jdeScreen
@@ -934,6 +984,12 @@ type itemSupplierFormSuppliersMsg struct {
 }
 
 type itemSupplierSavedMsg struct {
+	link *omsapi.ItemSupplier
+	err  error
+}
+
+// itemSupplierReloadedMsg answers Ctrl-R on a stale form: the link as stored.
+type itemSupplierReloadedMsg struct {
 	link *omsapi.ItemSupplier
 	err  error
 }
@@ -1066,6 +1122,11 @@ func (s *ItemSupplierFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, nil
 	case itemSupplierSavedMsg:
 		s.saving = false
+		if refusal, ok := omsapi.AsStaleSupplierLink(m.err); ok {
+			s.stale = refusal
+			s.errMsg = itemSupplierStaleHeadline(refusal)
+			return s, Status(refusal.Message, StatusError)
+		}
 		if m.err != nil {
 			s.errMsg = m.err.Error()
 			return s, Status("save failed: "+m.err.Error(), StatusError)
@@ -1082,6 +1143,8 @@ func (s *ItemSupplierFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			Status(fmt.Sprintf("supplier link %s: %s", verb, name), StatusOK),
 			SwitchTo(WSInventory, NewItemSuppliersScreen(s.deps, s.itemID, s.itemName)),
 		)
+	case itemSupplierReloadedMsg:
+		return s.reloaded(m)
 	case tea.KeyMsg:
 		if s.loading {
 			if m.String() == "esc" {
@@ -1118,9 +1181,15 @@ func (s *ItemSupplierFormScreen) hydrate() {
 	s.supplierID = &id
 	s.inputs[isSKU].SetValue(ex.SupplierSKU)
 	s.inputs[isURL].SetValue(ex.URL)
+	// A price the link does not carry is written as a BLANK rather than skipped:
+	// hydrate is also the reload a stale refusal offers, and skipping would leave
+	// a price the operator typed standing in a form that now claims to show the
+	// link as stored.
+	s.inputs[isUnitCost].SetValue("")
 	if !ex.UnitCost.Empty() {
 		s.inputs[isUnitCost].SetValue(ex.UnitCost.String())
 	}
+	s.inputs[isPackageCost].SetValue("")
 	if !ex.PackageCost.Empty() {
 		s.inputs[isPackageCost].SetValue(ex.PackageCost.String())
 	}
@@ -1174,10 +1243,19 @@ func (s *ItemSupplierFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 		// SUBMIT saves the link from any row. The supplier row used to swallow
 		// enter to open its picker; that is Ctrl-E now, so enter means the same
 		// thing here as it does everywhere else on the form.
-		if s.saving {
+		if s.saving || s.reloading {
+			return s, nil
+		}
+		if s.stale != nil {
+			// Unnamed while the refusal stands, and it DECLINES rather than
+			// sending: the copy's version cannot catch up, so the request could
+			// only be refused again. The row changes so the press is answered.
+			s.errMsg = itemSupplierStaleEnterNote
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+r":
+		return s.reload()
 	case "ctrl+e":
 		if id, ok := s.currentFieldID(); ok && id == isSupplier {
 			s.openPicker()
@@ -1210,7 +1288,7 @@ func (s *ItemSupplierFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 
 func (s *ItemSupplierFormScreen) moveCursor(delta int) {
 	body := s.formLines()
-	next, ok := s.moveRow(s.cursor, len(s.fields), delta, 0, s.formBar(body))
+	next, ok := s.moveRow(s.cursor, len(s.fields), delta, len(s.formHeader()), s.formBar(body))
 	if !ok {
 		return
 	}
@@ -1220,7 +1298,7 @@ func (s *ItemSupplierFormScreen) moveCursor(delta int) {
 
 func (s *ItemSupplierFormScreen) pageCursor(dir int) {
 	body := s.formLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, len(s.formHeader()),
 		s.formBar(body), s.formBarItems(true))
 	if !ok {
 		return
@@ -1375,6 +1453,15 @@ func (s *ItemSupplierFormScreen) buildPayload() (omsapi.ItemSupplierWrite, error
 	// AS the default; sending the 7 would store it as a quote. On EDIT an
 	// unchanged value is omitted so an unrelated edit preserves its source; a
 	// blank or changed value keeps the form's existing write semantics.
+	//
+	// The omission OUTLIVED the version token on purpose. Against an OMS with
+	// #1091 it is redundant: a copy whose lead time differs from storage is
+	// stale, and the version below gets it refused, while an equal echo keeps
+	// its source anyway. But a server before #1091 ignores the version, and a
+	// row it served carries none, so there the omission is still the only thing
+	// keeping an unrelated edit from writing a stale 7 over a newer measurement.
+	// It costs nothing where it is redundant. (The web retired its equivalent
+	// because it ships in lockstep with the server; this terminal does not.)
 	leadTime := &lead
 	if !s.edit && strings.TrimSpace(s.inputs[isLeadTime].Value()) == "" {
 		leadTime = nil
@@ -1391,6 +1478,14 @@ func (s *ItemSupplierFormScreen) buildPayload() (omsapi.ItemSupplierWrite, error
 		return w, errors.New("package cost must be a number")
 	}
 
+	// An edit states the version the link was LOADED at, so a link somebody
+	// wrote since is refused rather than overwritten. It is the copy's own
+	// version and nothing else — a reload replaces the copy, and with it this.
+	version := 0
+	if s.edit && s.existing != nil {
+		version = s.existing.Version
+	}
+
 	w = omsapi.ItemSupplierWrite{
 		Item:               s.itemID,
 		Supplier:           *s.supplierID,
@@ -1401,6 +1496,7 @@ func (s *ItemSupplierFormScreen) buildPayload() (omsapi.ItemSupplierWrite, error
 		QuantityPerPackage: qty,
 		AverageLeadTime:    leadTime,
 		IsPrimary:          s.isPrimary,
+		Version:            version,
 	}
 	return w, nil
 }
@@ -1430,6 +1526,116 @@ func itemSupplierParseMoney(raw string) (*string, error) {
 	return &raw, nil
 }
 
+// ---------------------------------------------------------------------------
+// A save refused because the copy is stale
+// ---------------------------------------------------------------------------
+
+// reload answers Ctrl-R, and only while a stale refusal stands.
+//
+// A link that was CHANGED is re-read into this form, which is the web item
+// form's "Reload suppliers": what the operator typed is replaced by the link as
+// stored, so their next save starts from a copy the server accepts and they see
+// what the other writer did before making their change again. A link that was
+// DELETED has no current copy to read, so the reload is the item's supplier
+// list, loaded afresh — the server's own sentence asks for exactly that.
+func (s *ItemSupplierFormScreen) reload() (Screen, tea.Cmd) {
+	if s.stale == nil || s.saving || s.reloading {
+		return s, nil
+	}
+	if s.stale.Deleted() {
+		return s, s.cancelCmd()
+	}
+	s.reloading = true
+	s.errMsg = ""
+	deps := s.deps
+	ctx := s.ctx()
+	id := s.rowID
+	return s, func() tea.Msg {
+		link, err := deps.OMS.GetItemSupplier(ctx, id)
+		return itemSupplierReloadedMsg{link: link, err: err}
+	}
+}
+
+// reloaded lands the Ctrl-R read.
+func (s *ItemSupplierFormScreen) reloaded(m itemSupplierReloadedMsg) (Screen, tea.Cmd) {
+	s.reloading = false
+	if m.err != nil {
+		var api *omsapi.APIError
+		if errors.As(m.err, &api) && api.IsNotFound() {
+			// Deleted between the refusal and the reload: the list is the only
+			// current copy there is.
+			return s, tea.Batch(Status(itemSupplierGoneNote, StatusWarn), s.cancelCmd())
+		}
+		// The refusal still stands — nothing about the copy changed — so the
+		// key stays on offer and the row says why the press did not land.
+		s.errMsg = "reload failed: " + m.err.Error()
+		return s, Status(s.errMsg, StatusError)
+	}
+	if m.link == nil {
+		s.errMsg = "reload failed: the server sent no link"
+		return s, Status(s.errMsg, StatusError)
+	}
+	s.existing = m.link
+	s.stale = nil
+	s.errMsg = ""
+	s.hydrate()
+	s.syncFocus()
+	return s, Status("supplier link reloaded as stored — make your change again", StatusOK)
+}
+
+// itemSupplierStaleHeadline is the status row's account of a stale refusal.
+//
+// The row is one line of 49 cells at 80 columns and cannot fold, so it LEADS
+// with what the operator cannot act without — nothing was saved — and says
+// which of the two refusals it is. The server's complete sentence is the pinned
+// header's (formHeader) and the bottom line's, and Ctrl-R is named on the bar.
+func itemSupplierStaleHeadline(r *omsapi.StaleSupplierLink) string {
+	if r.Deleted() {
+		return itemSupplierStaleDeletedNote
+	}
+	return itemSupplierStaleChangedNote
+}
+
+const (
+	itemSupplierStaleChangedNote = "nothing saved: link changed since it was opened"
+	itemSupplierStaleDeletedNote = "nothing saved: this link was deleted meanwhile"
+	// itemSupplierStaleEnterNote answers Enter while the refusal stands. It is
+	// worded differently from both headlines so the press visibly lands.
+	itemSupplierStaleEnterNote = "nothing sent: this copy is out of date"
+	// itemSupplierGoneNote is the flash when the reload finds the link deleted.
+	itemSupplierGoneNote = "that supplier link was deleted — showing the item's suppliers"
+	// itemSupplierReloadCaveat is the consequence of Ctrl-R, stated before the
+	// key is pressed: it discards what was typed, which is the point, and is
+	// never something the operator should discover afterwards.
+	itemSupplierReloadCaveat = "Reloading replaces everything typed on this form with the link as it is stored now."
+)
+
+// formHeader pins the stale refusal above the form, and is nil otherwise.
+//
+// The server's sentence is the complete account and is unbounded prose, so it
+// goes in as a FITTED block: a short pane re-draws it at fewer rows with the cut
+// marked (jdeHeader.addFitted) rather than leaving a fragment that reads as the
+// whole. Nothing here is essential. The two things the operator cannot act
+// without — that nothing was saved, and the key that reloads — ride the status
+// row and the bar, which no budget trims; the rows kept for the body are what
+// keeps the field under the cursor on the pane.
+func (s *ItemSupplierFormScreen) formHeader() jdeHeader {
+	if s.stale == nil {
+		return nil
+	}
+	width := s.bodyWidth()
+	message := s.stale.Message
+	styled := func(rows int) []string {
+		return jdeCaveatLinesStyled(message, width, rows, StyleStatusError)
+	}
+	h := jdeHeader{}.addFitted(jdeHeadContext, jdeHeadContext, styled(0), styled)
+	if !s.stale.Deleted() {
+		h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(itemSupplierReloadCaveat, width),
+			func(rows int) []string { return jdeCaveatLinesIn(itemSupplierReloadCaveat, width, rows) })
+	}
+	return h.add(jdeHeadDecorative, "")
+}
+
 func (s *ItemSupplierFormScreen) cancelCmd() tea.Cmd {
 	return SwitchTo(WSInventory, NewItemSuppliersScreen(s.deps, s.itemID, s.itemName))
 }
@@ -1453,7 +1659,12 @@ func (s *ItemSupplierFormScreen) View() string {
 
 func (s *ItemSupplierFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	verb := "Saving…"
+	if s.reloading {
+		verb = "Reloading the supplier link…"
+	}
+	return s.frameWithHeader(s.formHeader(), body, s.cursor,
+		s.statusRow(s.saving || s.reloading, verb, s.errMsg), s.formBar(body))
 }
 
 // formFields describes the link as columnar rows: the supplier is a picker, the
@@ -1533,13 +1744,22 @@ func (s *ItemSupplierFormScreen) formLines() *jdeLines {
 // row, and a folded bar leaves the body one row fewer. The tallest bar is the
 // fixed point, so the answer cannot oscillate between frames.
 func (s *ItemSupplierFormScreen) formBar(body *jdeLines) []actionBarItem {
-	return s.formBarItems(s.bodyPagesForBar(body, len(s.fields), 0, s.formBarItems(true)))
+	return s.formBarItems(s.bodyPagesForBar(body, len(s.fields), len(s.formHeader()), s.formBarItems(true)))
 }
 
 // formBarItems is formBar for a given paging state, so the bar that is
 // MEASURED is the bar that is drawn.
 func (s *ItemSupplierFormScreen) formBarItems(paging bool) []actionBarItem {
-	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	// A stale refusal trades Enter for Ctrl-R (reload's doc says why), and a
+	// reload in flight names neither: both arms decline until it lands.
+	var items []actionBarItem
+	switch {
+	case s.stale == nil:
+		items = append(items, actionBarItem{"Enter", "Save"})
+	case !s.reloading:
+		items = append(items, actionBarItem{"Ctrl-R", "Reload"})
+	}
+	items = append(items, actionBarItem{"Esc", "Cancel"}, actionBarItem{"UP/DN", "Fields"})
 	if id, ok := s.currentFieldID(); ok {
 		switch id {
 		case isSupplier:

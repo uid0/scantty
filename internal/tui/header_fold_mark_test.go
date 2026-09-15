@@ -82,7 +82,7 @@ func TestHeaderFold_AFoldedValueIsWholeAbsentOrMarked(t *testing.T) {
 	for _, screen := range []string{"PurchaseOrderAddLineScreen", "PurchaseOrderDetailScreen",
 		"PurchaseOrderEditScreen", "PurchaseOrderCreateScreen", "InventoryItemFormScreen",
 		"StorageSlotGenerateScreen", "AssetDocumentsScreen", "AssetMetersScreen",
-		"AssetMeterReadingsScreen", "WorkOrderScanReviewScreen"} {
+		"AssetMeterReadingsScreen", "WorkOrderScanReviewScreen", "ItemSupplierFormScreen"} {
 		if cut[screen] == 0 {
 			t.Errorf("%s: no pane drew a folded header value short of whole, so the "+
 				"trim was never exercised there", screen)
@@ -153,6 +153,10 @@ func headerFoldValues(s Screen) []string {
 		return []string{readingDropNote}
 	case *WorkOrderScanReviewScreen:
 		return []string{woScanImageCaveat}
+	case *ItemSupplierFormScreen:
+		if v.stale != nil {
+			return []string{v.stale.Message, itemSupplierReloadCaveat}
+		}
 	}
 	return nil
 }

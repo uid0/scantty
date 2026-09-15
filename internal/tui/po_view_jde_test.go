@@ -1358,6 +1358,10 @@ var poBarKeyNames = map[string][]string{
 	"Ctrl-X":    {"ctrl+x"},
 	"Ctrl-T":    {"ctrl+t"},
 	"Ctrl-A":    {"ctrl+a"},
+	// The item↔supplier link form's reload after a stale refusal
+	// (item_suppliers.go). Here rather than in a third table for the reason the
+	// e / k / o entries below give.
+	"Ctrl-R": {"ctrl+r"},
 	// A choice row's "< value >" pair. Space cycles it too and the bar does not
 	// spell that, which is recorded as poEditSelectAliases rather than credited
 	// here — this table transcribes what a token SPELLS and never a synonym.

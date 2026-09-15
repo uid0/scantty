@@ -348,3 +348,53 @@ What they pin that a hand-written map does not:
   withheld like the value, never served as `null`;
 * a server before #1085 serves **no key at all**, which is what the terminal's
   "draw exactly as before" rests on (`omsapi.LeadTimeSource`).
+
+## Supplier-link version token — `version` and the 409 `stale_version`
+
+| file | request | status | OMS builder |
+|---|---|---|---|
+| `supplier_link_version_created.json` | `POST /api/inventory/item-suppliers/` sending `average_lead_time: 7` (link 4) | **201** | `ItemSupplierSerializer.create` |
+| `supplier_link_stale_version_patch.json` | `PATCH …/item-suppliers/4/` with the terminal's edit body at `version: 1`, after another writer's `{"average_lead_time": 12, "version": 1}` had landed | **409** | `ItemSupplierViewSet.update` → `stale_supplier_link_response` |
+| `supplier_link_version_item_suppliers.json` | `GET /api/inventory/item-suppliers/?item_id=<hex nut>` | **200** | `ItemSupplierSerializer` |
+| `supplier_link_version_detail.json` | `GET …/item-suppliers/4/` — the reload | **200** | same |
+| `supplier_link_version_patch.json` | the same edit body again at `version: 2`, the reloaded copy's | **200** | `ItemSupplierSerializer.update` |
+| `supplier_link_stale_version_set_primary.json` | `PATCH …/item-suppliers/4/` `{"is_primary": true, "version": 3}`, after link 5 had been made primary | **409** | `ItemSupplierViewSet.update` |
+| `supplier_link_stale_version_delete.json` | `DELETE …/item-suppliers/6/?version=1`, after another writer moved link 6 to version 2 | **409** | `ItemSupplierViewSet.destroy` |
+| `supplier_link_stale_version_deleted.json` | `PATCH …/item-suppliers/6/` at `version: 2`, after `DELETE …/6/?version=2` had answered 204 | **409** | `ItemSupplierViewSet.update` (the `Http404` arm) |
+| `supplier_link_version_detail_gone.json` | `GET …/item-suppliers/6/` after that delete | **404** | DRF's handler, standardized envelope |
+
+Recorded 2026-09-13 against OpenMakerSuite remote `main` at commit
+`9fceac01169ab63a248ac5ed77630099a701d593` (tree `9dd6fe6f…`), which carries
+#1091, a clean clone on PostgreSQL, authenticated as a superuser. One database
+and one request sequence, in the order of the table, over three links on one
+item (`Hex nut M8 zinc`: Grainger link 4, Fastenal link 5, McMaster-Carr link 6).
+Each edit body is what `ItemSupplierFormScreen.buildPayload` sends for a form
+hydrated from the row it names — both prices echoed, the unchanged lead time
+omitted — so the refusal and the landed save answer the terminal's own write.
+
+The "another writer" requests were ordinary API PATCHes carrying their own
+correct version; their responses are not kept, because nothing on this side
+decodes them. They are what made the terminal's copy stale, and the sequence is
+the defect #1091 closes: link 4 loaded at 7, a quote of 12 saved over it, and
+the terminal's SKU edit — which would have been last-write-wins before — refused.
+
+What they pin that a hand-written map does not:
+
+* `version` is a JSON **number** on every representation — list rows, the
+  detail read and a write's echo — and moves on by one per write:
+  `supplier_link_version_patch.json` answers `3` to a write that stated `2`.
+* **A write that changes nothing a client draws still moves the token.**
+  `supplier_link_stale_version_set_primary.json` refuses `version: 3` with
+  `current_version: 4` on a link nobody edited: promoting link 5 DEMOTED link 4,
+  and the demotion is a write. A client that sent the version only when it
+  thought the row "really" changed would be wrong exactly there.
+* The refusal is OMS's **standardized envelope** at **409**, so `parseError`
+  already decodes it; `details.current_version` is JSON **null** once the link
+  is gone, and `error.message` is then a DIFFERENT sentence ("This supplier link
+  was deleted…"). `omsapi.AsStaleSupplierLink` keys on status and code, never on
+  the wording.
+* A DELETE carries the token as a **query value**, and its refusal is the same
+  body as a PATCH's.
+* The reload of a deleted link is an ordinary **404** `not_found`, which is how
+  `ItemSupplierFormScreen` tells "deleted since the refusal" apart from a failed
+  read.

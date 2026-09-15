@@ -124,6 +124,19 @@ func proseBarRowPackedListFixtures() []proseBarFixture {
 			},
 			immobile: "one link, so there is nowhere for the cursor to go",
 		},
+		// AFTER A STALE REFUSAL, where the count line gives its slot to the
+		// standing note that the list is out of date. The bar is the same bar —
+		// the note names `r`, which it already carries — so the state is swept
+		// for that claim holding on a frame drawing one more error row's worth
+		// of prose rather than for a new key.
+		proseBarFixture{
+			name: "item suppliers/after a stale refusal", recv: "ItemSuppliersScreen",
+			build: func() proseBarScreen {
+				s := proseBarItemSuppliers(3, proseBarSameName)
+				next, _ := s.Update(itemSupplierPrimaryMsg{err: supLinkStaleErr(supLinkStalePrimary)})
+				return next.(*ItemSuppliersScreen)
+			},
+		},
 	)
 }
 

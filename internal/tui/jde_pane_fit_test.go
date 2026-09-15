@@ -1293,6 +1293,16 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openPicker()
 			return s
 		},
+		// A save the server refused because the link was written after the form
+		// was opened on it: the refusal is pinned above the form, the bar trades
+		// Enter for Ctrl-R, and the two refusals (changed, deleted) draw
+		// different headers — so both are states of their own.
+		"ItemSupplierFormScreen/stale refusal": func() Screen {
+			return itemSupplierStaleFixture(supLinkStalePatch)
+		},
+		"ItemSupplierFormScreen/stale refusal, link deleted": func() Screen {
+			return itemSupplierStaleFixture(supLinkStaleDeleted)
+		},
 		"LocationFormScreen/pickView": func() Screen {
 			s := NewLocationFormScreen(Deps{}, "")
 			s.loading = false
@@ -2033,6 +2043,13 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 			func(s Screen) jdeHeader { h, _ := s.(*InventoryItemFormScreen).kitPickView(); return h }),
 		"ItemSupplierFormScreen/viewPick": pick("ItemSupplierFormScreen/pickView",
 			func(s Screen) jdeHeader { h, _ := s.(*ItemSupplierFormScreen).pickView(); return h }),
+		"ItemSupplierFormScreen/viewForm": {
+			mk:     states["ItemSupplierFormScreen/stale refusal"],
+			header: func(s Screen) jdeHeader { return s.(*ItemSupplierFormScreen).formHeader() },
+			alsoIn: map[string]func() Screen{
+				"link deleted": states["ItemSupplierFormScreen/stale refusal, link deleted"],
+			},
+		},
 		"LocationFormScreen/viewPick": pick("LocationFormScreen/pickView",
 			func(s Screen) jdeHeader { h, _ := s.(*LocationFormScreen).pickView(); return h }),
 		"MaintenanceItemFormScreen/viewAssetPick": pick("MaintenanceItemFormScreen/pickView",
@@ -2389,6 +2406,12 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 // site that declares nothing essential has to be written down as such, and a
 // site written down here that LATER declares one fails as a stale entry.
 var jdeHeadersWithoutEssentials = map[string]string{
+	"ItemSupplierFormScreen/viewForm": "the header is a stale refusal's full account — the " +
+		"server's sentence and what a reload costs — and both are prose the operator can do " +
+		"without on a short pane: that NOTHING WAS SAVED is the status row's headline and the " +
+		"key that reloads is on the bar, neither of which a budget trims. Marking the sentence " +
+		"essential would spend the header's one essential row on a copy of the headline while " +
+		"the field under the cursor lost its room",
 	"PurchaseOrderDetailScreen/viewVoid": "the void-order prompt's header is its heading and " +
 		"the cascade caveat, and its BODY is the Reason box — which the body's own floor of " +
 		"one row keeps on the pane at every height the frame is drawn at. Marking a caveat " +
