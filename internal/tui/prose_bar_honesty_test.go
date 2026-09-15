@@ -127,16 +127,13 @@ func proseBarReceivers(t *testing.T) map[string]bool {
 // says nothing about whether a keystroke is navigation. They are still
 // exceptions, and they are still visible.
 var proseBarUnconverted = map[string]string{
-	// THE SCROLLER SHEETS, which is the group the converted ones came out
-	// of: each holds a TextScroller and so has the whole movement vocabulary
-	// without spelling a key of it. (The two forecasts were recorded here as a
-	// cursor list above a scroller; they turned out to draw the scroller IN PLACE
-	// of the list, and went with the row-packed lists.) They are the cheapest conversions left,
-	// because proseNavScroll and proseScrollBar already do the work — what each
-	// one still needs is a decision about the states that draw something else
-	// instead of a bar.
-	"InventoryDetailScreen": "the item sheet, plus three pick modals that each draw their own prompt in place of the footer",
-	"WorkOrderDetailScreen": "the work-order sheet, plus its material pickers — the largest of the scroller sheets and the one with the most modal states to decide",
+	// THE SCROLLER SHEETS ARE ALL CONVERTED. They were the group the first
+	// conversions came out of — each holds a TextScroller and so had the whole
+	// movement vocabulary without spelling a key of it — and the last two were the
+	// sheets whose MODES draw in place of the footer, the item sheet and the
+	// work-order sheet: prose_bar_scroller_sheets_test.go carries them, and the
+	// per-mode answer to "does its prompt name every key it acts on" is written
+	// where each bar is built. What is left below is not a scroller sheet.
 
 	// THE CURSOR LISTS, which are the bulk. Each draws rows with a cursor and a
 	// prose footer, so a record is only part of it: the movement segments have to
@@ -178,7 +175,8 @@ var proseBarUnconverted = map[string]string{
 	// run's notes box, the work-order attachments' delete confirm and upload form,
 	// the maker-box directory's service notices, forms and confirms — where the
 	// window is budgeted around a FOOT that is more than the bar:
-	// prose_bar_foot_prompts_test.go carries it.
+	// prose_bar_foot_prompts_test.go carries it. (The ninth recipe was not a
+	// cursor list at all — the two scroller sheets above.)
 	// What remains divides:
 	//
 	//   - STILL ON THAT RECIPE, but not mechanically. Each has a window and a
@@ -241,7 +239,7 @@ var proseBarUnconverted = map[string]string{
 	"LocationDetailScreen": "NOT a prose-footer screen in the sense the rest of this map is: it is here because the navigation derivation is a set of KEY NAMES and its `g` GENERATES the location's QR code. A proseBar records which keystrokes a segment spells, which says nothing about whether a keystroke is navigation — so converting it would not make this exception expressible, and it stays an exception. Recorded rather than filtered, since a filter clever enough to drop it would eventually drop a real one",
 	"ReportTableScreen":    "the shared scrollable report table every tabbed report rides. It is the one screen here whose vertical give-order is ALREADY written down and enforced (report_table.go's layoutRows: the legend and the bar never give, the body floors at one row), so converting it is turning the bar it never gives up into a record — not teaching it to budget",
 	"Root":                 "NOT a screen: app.go's root, whose movement keys walk the NAV TREE. The sidebar is its own surface with its own legend and is not a list of rows, so there is no footer here to make a record of",
-	"TextScroller":         "NOT a screen and so has no footer to convert: the shared read-only body every sheet in the scroller group above holds. It is in listNavUnsweptReceivers because its Handle binds the whole vocabulary on its callers' behalf, and it leaves this map when the last of those callers has a record",
+	"TextScroller":         "NOT a screen and so has no footer to convert: the shared read-only body the scroller sheets hold. EVERY sheet holding one now declares a record, so each keystroke its Handle binds is pressed through that sheet's bar — the condition this entry used to wait on. It stays because the navigation derivation reads key names off RECEIVERS, and a shared component whose Handle binds the vocabulary is one; a filter clever enough to drop a component would be clever enough to drop a screen, so it is recorded rather than filtered",
 	"slotCardPrompt":       "NOT a list and NOT a prose footer: a two-row modal inside the storage-slot list whose up/down move between a text field and a toggle, and whose cursor WRAPS. The field-form exemption, and the second of the two entries a filter would have to be clever enough to drop — so it stays an exception too",
 }
 
@@ -301,6 +299,30 @@ type proseBarFixture struct {
 	// different character draws a different list. `l/L/?` on the check-in entry
 	// is the one such binding here, and it is named.
 	typing string
+	// digits narrows `typing` to a box that takes DIGITS alone — a counted
+	// quantity, whose arm drops every other printable rune before the box sees it.
+	// There a letter is not the box's key: it is an unbound key that changes
+	// nothing, and the reverse half judges it like any other, so the exemption
+	// covers exactly the runes the box really takes and a typed letter that did
+	// land in it would fail.
+	digits bool
+	// otherEdge walks the fixture to the edge `end` does not reach, for a list
+	// that binds no `end` and is too short to stand anywhere but at an edge. A
+	// two-row picker is the case: from the top `k` clamps and from the bottom `j`
+	// does, so no single resting position shows the pair acting, and a clamped key
+	// is not a dead one (proseBarProbes).
+	otherEdge []string
+}
+
+// proseBarProbes is where the key-effect sweeps press a key from: the resting
+// position, the end of the body, and the fixture's other edge where it records
+// one.
+func proseBarProbes(f proseBarFixture) [][]string {
+	probes := [][]string{nil, {"end"}}
+	if len(f.otherEdge) > 0 {
+		probes = append(probes, f.otherEdge)
+	}
+	return probes
 }
 
 // proseBarBoxKeys are the non-printable keys a focused bubbles textinput
@@ -318,6 +340,9 @@ func proseBarBoxTakes(f proseBarFixture, key string) bool {
 		return false
 	}
 	r := []rune(key)
+	if f.digits && len(r) == 1 {
+		return r[0] >= '0' && r[0] <= '9'
+	}
 	return (len(r) == 1 && r[0] >= 0x20 && r[0] <= 0x7e) || proseBarBoxKeys[key]
 }
 
@@ -574,6 +599,9 @@ func proseBarFixtures() []proseBarFixture {
 	// The flat lists whose prompt, form or confirm is drawn under or in place of
 	// the rows, the eighth — see proseBarFootPromptFixtures.
 	out = append(out, proseBarFootPromptFixtures()...)
+	// The two scroller sheets whose modes draw in place of their footer, the
+	// ninth — see proseBarScrollerSheetFixtures.
+	out = append(out, proseBarScrollerSheetFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are
@@ -942,10 +970,10 @@ func TestProseBar_EveryNamedKeyIsPressed(t *testing.T) {
 // named and doing nothing. A sweep nobody has watched fail is a sweep nobody
 // knows can.
 func TestProseBar_TheFooterNamesExactlyTheKeysThatWork(t *testing.T) {
-	probes := [][]string{nil, {"end"}}
 	declined := 0
 	for _, f := range proseBarFixtures() {
 		t.Run(f.name, func(t *testing.T) {
+			probes := proseBarProbes(f)
 			bar := proseBarAt(f, 80, 24)
 			if len(bar) == 0 {
 				t.Fatalf("%s draws no bar at 80x24, so this sweep proves nothing", f.name)
@@ -1076,7 +1104,7 @@ func TestProseBar_EveryMovementKeyIsNamedWhereItMoves(t *testing.T) {
 					continue
 				}
 				var changed bool
-				for _, probe := range [][]string{nil, {"end"}} {
+				for _, probe := range proseBarProbes(f) {
 					c, _ := proseBarKeyEffect(f, 80, 24, probe, key)
 					changed = changed || c
 				}
@@ -1354,7 +1382,7 @@ func proseBarChangedRows(f proseBarFixture, w, h int, key string) string {
 // the untyped guard).
 func proseBarTypedRows(f proseBarFixture, bar proseBar) string {
 	for _, key := range proseBarKeySpace() {
-		if len([]rune(key)) == 1 && key != " " && !bar.names(key) {
+		if len([]rune(key)) == 1 && key != " " && !bar.names(key) && proseBarBoxTakes(f, key) {
 			return proseBarChangedRows(f, 80, 24, key)
 		}
 	}

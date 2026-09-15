@@ -754,7 +754,7 @@ func TestWOLoto_ARecordCanBeTakenBackAndTheDirectionIsNeverImplied(t *testing.T)
 	if !strings.Contains(frame, "Clear lockout record") {
 		t.Errorf("the frame must name the direction it is about to write: %q", frame)
 	}
-	if !strings.Contains(woSquash(frame), woSquash("y clear the record")) {
+	if !strings.Contains(woSquash(frame), woSquash("y/Y clear the record")) {
 		t.Errorf("the legend must say which way y goes: %q", frame)
 	}
 	reached := woSquash(frame)

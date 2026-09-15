@@ -160,6 +160,8 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen {
 				return NewForgeKeyDeviceFormScreen(d, &forgekeyapi.Device{ID: 12, Name: "Wood shop south door reader"})
 			}},
+		{name: "item detail", recv: "InventoryDetailScreen", loaded: "item detail/serialized, open-closed, retired", reload: "r",
+			fresh: func(d Deps) proseBarScreen { return NewInventoryDetailScreen(d, "itm-1") }},
 		{name: "item suppliers", recv: "ItemSuppliersScreen", loaded: "item suppliers", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewItemSuppliersScreen(d, "itm-1", "Hex bolt M8x40") }},
 		{name: "location check-ins", recv: "LocationCheckinsScreen", loaded: "location check-ins", reload: "r",
@@ -210,6 +212,8 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen { return NewUsageScreen(d) }},
 		{name: "vendors", recv: "VendorsScreen", loaded: "vendors", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewVendorsScreen(d) }},
+		{name: "work order detail", recv: "WorkOrderDetailScreen", loaded: "work order detail", reload: "r",
+			fresh: func(d Deps) proseBarScreen { return NewWorkOrderDetailScreen(d, "wo1") }},
 		{name: "work order attachments", recv: "WorkOrderAttachmentsScreen", loaded: "work order attachments", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewWorkOrderAttachmentsScreen(d, "42") }},
 		{name: "webhook list", recv: "WebhookListScreen", loaded: "webhook list", reload: "r",

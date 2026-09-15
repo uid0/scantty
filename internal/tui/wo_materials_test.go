@@ -105,8 +105,8 @@ func TestWODetailMaterialsOpenWhenEmpty(t *testing.T) {
 	if !strings.Contains(out, "Press a to add") {
 		t.Errorf("empty state must point at the add key: %q", out)
 	}
-	if !strings.Contains(s.footerHint(), "M materials") {
-		t.Errorf("footer must offer M with no materials yet: %q", s.footerHint())
+	if !strings.Contains(s.sheetBar(false).hint(), "M materials") {
+		t.Errorf("footer must offer M with no materials yet: %q", s.sheetBar(false).hint())
 	}
 }
 
