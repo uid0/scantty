@@ -25,8 +25,6 @@ config.local.*
 
 # Gas City
 .beads/*
-!.beads/config.yaml
-!.beads/metadata.json
 
 # Claude Code / agent tooling
 .claude/
@@ -34,3 +32,6 @@ config.local.*
 # Beads / Dolt files (added by bd init)
 .dolt/
 .beads-credential-key
+
+# Gas City
+!.beads/identity.toml
