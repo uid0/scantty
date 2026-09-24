@@ -13,6 +13,15 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a pull request cancels that PR's older run that is still going:
+# only the newest commit's result counts, and the superseded run would hold
+# runners for its full length. Pushes to main key on the run id instead, so
+# every merge gets a group of its own and runs to completion (the release job
+# below must see each one through).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 # Least privilege by default; the release job opts into write below.
 permissions:
   contents: read
