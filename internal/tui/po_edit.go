@@ -1648,7 +1648,7 @@ const (
 // these hold, and only then (PurchaseOrderViewSet.get_queryset, oms-a8o): the
 // order HAS line items, none of them survives unvoided, and it is OUTSIDE
 // PurchaseOrder.PRE_SUPPLIER_STATUSES. ScanTTY's list is a straight
-// pass-through of that endpoint (list.go's purchaseOrderRows), so it cannot
+// pass-through of that endpoint (list.go's purchaseOrderPage), so it cannot
 // lift the filter and answers by SAYING SO on the frame the key is pressed
 // from — but only where the third conjunct can actually be true.
 //

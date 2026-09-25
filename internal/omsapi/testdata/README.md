@@ -440,3 +440,54 @@ What they pin that a hand-written map does not:
 * a note keeps its **newline**;
 * the list is newest first, and 51 rows arrive as a page of 50 with a `next`
   link and a page of 1.
+
+## Paged workspace lists — page 1 and page 2
+
+| file | request | status | count | results | next |
+|---|---|---|---|---|---|
+| `inventory_items_page1.json` | `GET /api/inventory/items/?with_metrics=1&include_retired=true` | 200 | 62 | 50 | set |
+| `inventory_items_page2.json` | the same with `&page=2` | 200 | 62 | 12 | null |
+| `inventory_items_low_stock.json` | the first with `&low_stock=true` | 200 | 10 | 10 | null |
+| `inventory_items_in_stock.json` | the first with `&low_stock=false` | 200 | 50 | 50 | null |
+| `inventory_items_retired_hidden.json` | `GET /api/inventory/items/?with_metrics=1&include_retired=false` | 200 | 60 | 50 | set |
+| `inventory_items_search.json` | the first with `&search=nitrile` | 200 | 4 | 4 | null |
+| `inventory_items_page_out_of_range.json` | the first with `&page=9` | **404** | — | — | — |
+| `assets_page1.json` / `assets_page2.json` | `GET /api/inventory/assets/`, then `?page=2` | 200 | 56 | 50 / 6 | set / null |
+| `work_orders_page1.json` / `work_orders_page2.json` | `GET /api/inventory/work-orders/`, then `?page=2` | 200 | 56 | 50 / 6 | set / null |
+| `purchase_orders_page1.json` / `purchase_orders_page2.json` | `GET /api/reorders/purchase-orders/`, then `?page=2` | 200 | 56 | 50 / 6 | set / null |
+
+Recorded 2026-09-14 against OpenMakerSuite remote `main` at commit
+`7317d64ae99fd67282709b6ca2ccb5c963b6e968` (tree `a57d67e5…`), a clean clone on
+PostgreSQL 18, authenticated as a superuser. The bodies were parsed and
+re-serialized with one-space indentation; no value was edited.
+
+One database was seeded to run every list past OMS's `PAGE_SIZE` of 50, with
+names that differ at the FRONT so a clipped row still tells its neighbours
+apart: 62 non-kit items (10 low stock, three of them exactly AT their minimum;
+two retired with no stock; one retired with 6 on hand against a minimum of 1;
+four matching `nitrile` — two by name, one by description only, one by SKU
+only), and 56 each of assets, work orders and purchase orders (20 draft, 18
+sent, 18 received).
+
+What they pin that a hand-written page does not:
+
+* **`next` is the only statement that another page exists**: set on each
+  page 1 and `null` on each page 2. The links DRF writes carry the recording
+  host and re-sorted params, so a client pages by number rather than by URL.
+* **An out-of-range page is a 404 in the standardized envelope**
+  (`{"error": {"code": "not_found", "message": "Invalid page."}}`), not DRF's
+  `{"detail": …}`, so `parseError` reads the sentence.
+* **Item, asset and work-order ids are strings; a purchase-order id is a
+  number.**
+* **`low_stock=true` and `low_stock=false` do not cover the catalogue.** `true`
+  is at-or-below minimum and never retired; `false` is above minimum and does
+  NOT exclude retired, so the retired item with stock is in it — and the two
+  retired-and-empty items are in neither (10 + 50 of 62).
+* **`include_retired=false` hides only a retired item with no stock**; the
+  retired item still holding stock is listed.
+* **The purchase-order list is served with no `ORDER BY`**: the voided-order
+  count in `PurchaseOrderViewSet.get_queryset` drops the model's default
+  ordering, and DRF logs an unordered-pagination warning. These pages look
+  ordered only because the rows were inserted in order; on a live database two
+  pages can overlap or skip a row, which is why the terminal skips a row it has
+  already loaded. That is an OMS defect and nothing here can repair the skip.

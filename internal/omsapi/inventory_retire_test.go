@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -75,7 +76,7 @@ func TestListItemsWithMetrics_IncludesRetired(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	page, err := c.ListItemsWithMetrics(context.Background())
+	page, err := c.ListItemsWithMetrics(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListItemsWithMetrics: %v", err)
 	}
@@ -88,6 +89,48 @@ func TestListItemsWithMetrics_IncludesRetired(t *testing.T) {
 	}
 	if len(page.Results) != 1 || !page.Results[0].IsRetired {
 		t.Fatalf("expected one retired item, got %+v", page.Results)
+	}
+}
+
+// TestListItemsWithMetrics_MergesTheListsQuery pins the other half of that
+// default: the inventory list's own params ride over it rather than replacing
+// it. A page, a search and a stock filter are forwarded as given; an explicit
+// include_retired — the web's "Hide Retired" view, sent as false — wins over
+// the default instead of being overwritten back to true; and with_metrics is
+// always sent. The caller's map is not modified, because it is a filter-table
+// entry the next request reads again.
+func TestListItemsWithMetrics_MergesTheListsQuery(t *testing.T) {
+	var got url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":0,"next":null,"previous":null,"results":[]}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL)
+
+	q := url.Values{"page": {"2"}, "search": {"nitrile"}, "low_stock": {"true"}}
+	if _, err := c.ListItemsWithMetrics(context.Background(), q); err != nil {
+		t.Fatalf("ListItemsWithMetrics: %v", err)
+	}
+	for key, want := range map[string]string{
+		"page": "2", "search": "nitrile", "low_stock": "true",
+		"with_metrics": "1", "include_retired": "true",
+	} {
+		if got.Get(key) != want {
+			t.Errorf("%s = %q, want %q (query %v)", key, got.Get(key), want, got)
+		}
+	}
+	if len(q) != 3 {
+		t.Errorf("the caller's query was modified: %v", q)
+	}
+
+	hide := url.Values{"include_retired": {"false"}}
+	if _, err := c.ListItemsWithMetrics(context.Background(), hide); err != nil {
+		t.Fatalf("ListItemsWithMetrics: %v", err)
+	}
+	if v := got["include_retired"]; len(v) != 1 || v[0] != "false" {
+		t.Errorf("include_retired = %v, want the caller's false to win over the default", v)
 	}
 }
 

@@ -263,7 +263,7 @@ func TestList_ARowNeverDrawsAPartialNumber(t *testing.T) {
 // IT IS ASKED OF THE SEARCH OVERLAY TOO, on the surfaces that have one. The
 // overlay draws its own head and then the SAME bodyView, so the rows under a
 // query are the rows this bound is about — and a search is exactly where an
-// OMS-length title arrives, since searchAssets and searchKits forward the query
+// OMS-length title arrives, since the asset list and searchKits forward the query
 // to the server and hand back whatever it names. The rows are bounded there by
 // construction rather than by a second code path, which is the point: this
 // presses the state rather than reasoning about it.
@@ -288,7 +288,7 @@ func TestList_ACutRowSaysSo(t *testing.T) {
 }
 
 // listAssertCutRowSaysSo reports whether it reached the state it was asked for:
-// a surface with no searchLoader has no overlay to press, and `false` there is
+// a surface with no server search has no overlay to press, and `false` there is
 // what keeps the overlay axis from asserting nothing everywhere at once.
 func listAssertCutRowSaysSo(t *testing.T, build func() *ListScreen, w, h, cursor int, searching bool) bool {
 	t.Helper()
@@ -297,7 +297,7 @@ func listAssertCutRowSaysSo(t *testing.T, build func() *ListScreen, w, h, cursor
 		next, _ := s.Update(listRuneKey("/"))
 		s = next.(*ListScreen)
 		if !s.searching {
-			return false // this surface has no searchLoader, so it has no overlay
+			return false // this surface has no server search, so it has no overlay
 		}
 		s.rows = listWideFixtures()
 		s.windowSize = len(s.rows)
