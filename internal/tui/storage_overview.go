@@ -29,8 +29,9 @@
 // nor an assignment surface — so the serializer + viewset are the parity
 // target; see internal/omsapi/storage_overview.go for the verified contract.
 //
-// Keys: h/j/k/l or arrows move · enter open the slot · a assign · x release ·
-// pgup/pgdn page racks · r refresh.
+// The keys the grid answers are a proseBar RECORD (StorageOverviewScreen.proseBar),
+// not a list here: which of them is named depends on where the cursor stands, and
+// a copy of that in a comment is a second answer that drifts.
 package tui
 
 import (
@@ -260,6 +261,13 @@ func (s *StorageOverviewScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		)
 
 	case tea.KeyMsg:
+		// A load in flight or failed answers only the keys its bar names — the
+		// rule the other converted screens keep (prose_bar.go). Movement here
+		// would walk a cursor over a grid the frame no longer draws, and `x`
+		// would arm a confirm nobody can read.
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingRelease {
 			return s.updateConfirmRelease(m)
 		}
@@ -469,53 +477,69 @@ func containsLevel(levels []string, want string) bool {
 }
 
 func (s *StorageOverviewScreen) movePosition(delta int) {
-	r := s.rack()
-	if r == nil {
-		return
-	}
-	next := s.position + delta
-	if next < 1 || next > r.MaxPosition {
+	next, ok := s.positionTarget(delta)
+	if !ok {
 		return
 	}
 	s.position = next
 	s.scrollIntoView()
 }
 
+// positionTarget is where h/l would put the cursor, and whether that is
+// anywhere — the ONE predicate the arm and the bar both read, so a direction is
+// named exactly where the key moves.
+func (s *StorageOverviewScreen) positionTarget(delta int) (int, bool) {
+	r := s.rack()
+	if r == nil {
+		return 0, false
+	}
+	next := s.position + delta
+	return next, next >= 1 && next <= r.MaxPosition
+}
+
 // moveLevel steps DOWN the printed grid for a positive delta — the rows are in
 // descending level order, so "j" moves toward the ground, which is what the
 // picture shows.
 func (s *StorageOverviewScreen) moveLevel(delta int) {
+	next, ok := s.levelTarget(delta)
+	if !ok {
+		return
+	}
+	s.level = next
+	s.scrollIntoView()
+}
+
+// levelTarget is positionTarget for j/k.
+func (s *StorageOverviewScreen) levelTarget(delta int) (string, bool) {
 	r := s.rack()
 	if r == nil {
-		return
+		return "", false
 	}
-	idx := -1
-	for i, l := range r.Levels {
-		if l == s.level {
-			idx = i
-			break
-		}
-	}
+	idx := levelIndex(r.Levels, s.level)
 	next := idx + delta
 	if idx < 0 || next < 0 || next >= len(r.Levels) {
-		return
+		return "", false
 	}
-	s.level = r.Levels[next]
-	s.scrollIntoView()
+	return r.Levels[next], true
+}
+
+// levelIndex is where a level sits in the printed order, or -1.
+func levelIndex(levels []string, level string) int {
+	for i, l := range levels {
+		if l == level {
+			return i
+		}
+	}
+	return -1
 }
 
 // moveRack pages between racks and lands on the top-left of the new one — a
 // level letter and a position carried over from another rack mean nothing here.
 func (s *StorageOverviewScreen) moveRack(delta int) {
-	if s.overview == nil || len(s.overview.Racks) == 0 {
+	r, ok := s.rackTarget(delta)
+	if !ok {
 		return
 	}
-	idx := s.rackIndex()
-	if idx < 0 {
-		idx = 0
-	}
-	next := (idx + delta + len(s.overview.Racks)) % len(s.overview.Racks)
-	r := s.overview.Racks[next]
 	s.rackNumber = r.Rack
 	s.level = ""
 	if len(r.Levels) > 0 {
@@ -526,28 +550,178 @@ func (s *StorageOverviewScreen) moveRack(delta int) {
 	s.scrollIntoView()
 }
 
+// rackTarget is the rack pgup/pgdn would land on. It answers ok for any loaded
+// racking — the arm has always paged, and wraps — and rackPageMoves is what
+// says whether the landing is anywhere the operator is not already standing.
+func (s *StorageOverviewScreen) rackTarget(delta int) (*omsapi.StorageOverviewRack, bool) {
+	if s.overview == nil || len(s.overview.Racks) == 0 {
+		return nil, false
+	}
+	idx := s.rackIndex()
+	if idx < 0 {
+		idx = 0
+	}
+	next := (idx + delta + len(s.overview.Racks)) % len(s.overview.Racks)
+	return &s.overview.Racks[next], true
+}
+
+// rackPageMoves reports whether pgup/pgdn change what the operator sees.
+//
+// NOT "is there a second rack", and the difference is a key that works unnamed.
+// moveRack WRAPS and always lands on the top-left of the rack it reaches, so on
+// racking with ONE rack the pair lands on the top-left of the rack already
+// drawn: nothing from the first slot, and a real jump from anywhere else. A bar
+// gated on a second rack would leave that jump unnamed; naming it "rack" there
+// would be a claim about a rack that is not there. So the landing is compared
+// with where the cursor stands, and storageRackPageHint words the two cases apart.
+// (The window resets with the cursor and is a function of it, so an unmoved
+// cursor is an unmoved pane.)
+func (s *StorageOverviewScreen) rackPageMoves() bool {
+	r, ok := s.rackTarget(+1)
+	if !ok {
+		return false
+	}
+	level := ""
+	if len(r.Levels) > 0 {
+		level = r.Levels[0]
+	}
+	return r.Rack != s.rackNumber || level != s.level || s.position != 1
+}
+
 // ---------------------------------------------------------------------------
 // Windowing — a rack can be wider and taller than the pane
 // ---------------------------------------------------------------------------
 
 // gridColumns is how many POSITIONS fit beside the level-letter column.
+//
+// Measured against proseBarCells, the number every other line on this frame is
+// folded or clipped against, so the grid and the words about it agree on where
+// the pane ends. A level is one letter
+// (OMS validates `^[A-Za-z]$`), so the letter column is one cell.
 func (s *StorageOverviewScreen) gridColumns() int {
-	avail := screenBodyWidth(s.terminalWidth) - 1 // the level-letter column
+	avail := proseBarCells(s.terminalWidth) - 1 // the level-letter column
 	if avail < 8 {
 		avail = 8
 	}
 	return avail
 }
 
-// gridRows is how many LEVEL rows fit. The chrome is the header, the two ruler
-// lines, the cursor line, the legend and the hint, plus their separators.
+// gridRows is how many LEVEL rows the window draws — storageGridLayout's answer.
 func (s *StorageOverviewScreen) gridRows() int {
-	const chrome = 11
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return s.layout(s.rack()).rows
+}
+
+// storageGridLayout is the vertical give-order of the loaded frame, decided in
+// one place so the window the arms scroll and the frame View draws are one
+// answer.
+type storageGridLayout struct {
+	// rows is how many level rows the window draws.
+	rows int
+	// legend is whether the colour legend is drawn. It is a fixed explanation
+	// the screen owns, so it is drawn WHOLE or not at all — proseRefusalFrame's
+	// rule for its note — rather than losing a fold off its end that nothing
+	// marks.
+	legend bool
+}
+
+// layout is the frame's row budget, DERIVED from what will be drawn.
+//
+// WHAT IT REPLACES. The grid was budgeted by `const chrome = 11`: a header, two
+// rulers, a cursor line, a legend and a hint of ONE row each. None of the four
+// prose lines is one row at 80 columns — the header, the legend and the bar are
+// each past the 51 cells the pane gives, and clampToBox took their tails with
+// no mark: `r refresh` was never on the pane. Folding them is the fix, and a
+// fold spends rows, so the budget has to be counted from the folds.
+//
+// THE GIVE-ORDER, stated. The foot — the bar, or the release confirm drawn in
+// its place — never gives, and neither do the header, the rulers or the cursor
+// line, which says what the cursor is on. The grid gives rows down to the
+// window floor (or to the whole rack, where it is shorter); then the legend
+// goes, whole; then the grid gives down to ONE level, the one the cursor is on.
+// Below that the frame is taller than the pane, the band proseBarFrameFits
+// scopes the sweeps around.
+//
+// BOTH SCROLL MARKERS are reserved whenever the rack is taller than the window,
+// for the reason proseListFixedRows gives: a cursor in the middle draws both.
+//
+// THE BAR IS COUNTED AT ITS CEILING (storageGridCeilingRows), for the reason
+// proseSizeScroller gives: which directions are named changes with the cursor,
+// and a budget taken from the live bar would move the window under a key that
+// only meant to move the cursor.
+//
+// AN UNSIZED SCREEN DRAWS EVERY LEVEL, the layer's standing answer for no pane.
+func (s *StorageOverviewScreen) layout(r *omsapi.StorageOverviewRack) storageGridLayout {
+	if r == nil {
+		return storageGridLayout{legend: true}
 	}
-	return avail
+	levels := len(r.Levels)
+	if s.terminalHeight <= 0 {
+		return storageGridLayout{rows: levels, legend: true}
+	}
+	cells := proseBarCells(s.terminalWidth)
+	fixed := len(s.headerLines(r, cells)) + 1 + // header, blank
+		s.rulerRows(r) + // tens and digit rulers
+		1 + 1 + // blank, cursor line
+		s.footRows(cells)
+	legend := 1 + len(storageGridLegendLines(cells)) // blank, legend
+	avail := screenBodyRows(s.terminalHeight) - fixed
+	fit := func(avail int) int {
+		if levels <= avail {
+			return levels
+		}
+		if rows := avail - 2; rows > 1 {
+			return rows
+		}
+		return 1
+	}
+	floor := levels
+	if floor > proseListWindowFloor {
+		floor = proseListWindowFloor
+	}
+	if left := avail - legend; left >= floor+storageMarkerRows(levels, floor) {
+		return storageGridLayout{rows: fit(left), legend: true}
+	}
+	return storageGridLayout{rows: fit(avail)}
+}
+
+// storageMarkerRows is the rows both scroll markers take over a window of
+// `rows` levels: none where the whole rack fits.
+func storageMarkerRows(levels, rows int) int {
+	if levels <= rows {
+		return 0
+	}
+	return 2
+}
+
+// rulerRows is how many ruler lines the grid draws: the digit ruler, and the
+// tens ruler wherever a multiple of ten is on screen.
+func (s *StorageOverviewScreen) rulerRows(r *omsapi.StorageOverviewRack) int {
+	if storageGridTensRuler(s.colStart, s.visibleColumns(r)) != "" {
+		return 2
+	}
+	return 1
+}
+
+// visibleColumns is how many positions the grid really draws: the window, or
+// the rest of the rack past colStart where that is narrower.
+func (s *StorageOverviewScreen) visibleColumns(r *omsapi.StorageOverviewRack) int {
+	cols := s.gridColumns()
+	if cols > r.MaxPosition-s.colStart {
+		cols = r.MaxPosition - s.colStart
+	}
+	if cols < 1 {
+		cols = 1
+	}
+	return cols
+}
+
+// footRows is what the foot takes, its blank separator included: the release
+// confirm where it is up, the bar's ceiling otherwise.
+func (s *StorageOverviewScreen) footRows(cells int) int {
+	if s.confirmingRelease {
+		return 1 + len(strings.Split(s.releaseConfirmText(cells), "\n"))
+	}
+	return storageGridCeilingRows(cells)
 }
 
 func (s *StorageOverviewScreen) scrollIntoView() {
@@ -576,12 +750,9 @@ func (s *StorageOverviewScreen) scrollIntoView() {
 	}
 
 	rows := s.gridRows()
-	idx := 0
-	for i, l := range r.Levels {
-		if l == s.level {
-			idx = i
-			break
-		}
+	idx := levelIndex(r.Levels, s.level)
+	if idx < 0 {
+		idx = 0
 	}
 	if len(r.Levels) <= rows {
 		s.rowStart = 0
@@ -606,36 +777,249 @@ func (s *StorageOverviewScreen) scrollIntoView() {
 // ---------------------------------------------------------------------------
 
 func (s *StorageOverviewScreen) View() string {
+	cells := proseBarCells(s.terminalWidth)
 	if s.loading {
-		return StyleMuted.Render("Loading the racking…")
+		return proseLoadingFrame("Loading the racking…", cells, s.loadBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" +
-			StyleMuted.Render("press r to retry · the overview is staff / Storage Admin only")
+		return proseRefusalFrame("Error: ", StyleStatusError, s.loadErr,
+			"the overview is staff / Storage Admin only", s.terminalHeight, cells, s.loadBar())
 	}
 	r := s.rack()
 	if r == nil {
-		return StyleMuted.Render("No racking yet.") + "\n" +
-			StyleMuted.Render("Storage slots (Facilities → R) is where a rack is generated.")
+		return pickerHintAt("No racking yet.\nStorage slots (Facilities → R) is where a rack is generated.", cells) +
+			"\n\n" + s.proseBar().render(cells)
 	}
+
+	// The window is a function of the pane, the rack and the cursor, and
+	// scrollIntoView is idempotent given the three — so asking it here, where
+	// the frame is drawn, cannot disagree with the frame. It is asked here at
+	// all because the layout also depends on the FOOT: the release confirm is
+	// not the bar's height, and `x` opening it moves no cursor.
+	s.scrollIntoView()
+	lay := s.layout(r)
 
 	var b strings.Builder
-	b.WriteString(s.headerLine(r) + "\n\n")
-	b.WriteString(s.gridBlock(r))
+	b.WriteString(strings.Join(s.headerLines(r, cells), "\n") + "\n\n")
+	b.WriteString(s.gridBlock(r, lay.rows))
 	b.WriteString("\n")
-	b.WriteString(s.cursorLine() + "\n\n")
-	b.WriteString(storageGridLegend() + "\n")
+	b.WriteString(s.cursorLine(cells) + "\n")
+	if lay.legend {
+		b.WriteString("\n" + strings.Join(storageGridLegendLines(cells), "\n") + "\n")
+	}
 
 	if s.confirmingRelease {
-		b.WriteString(s.releaseConfirmText())
+		b.WriteString("\n" + s.releaseConfirmText(cells))
 		return b.String()
 	}
-	b.WriteString(StyleMuted.Render(
-		"h/j/k/l move · enter open slot · a assign C/L/E · x release · pgup/pgdn rack · r refresh"))
+	b.WriteString("\n" + s.proseBar().render(cells))
 	return b.String()
 }
 
-func (s *StorageOverviewScreen) headerLine(r *omsapi.StorageOverviewRack) string {
+// ---------------------------------------------------------------------------
+// The bar
+// ---------------------------------------------------------------------------
+
+// storageGridOffers is which of the grid's keys would act where the cursor
+// stands — every field is a question an arm answers the same way.
+type storageGridOffers struct {
+	left, right, up, down bool
+	home, end             bool
+	// racks is whether pgup/pgdn move the pane, and otherRack whether they land
+	// on a DIFFERENT rack — see rackPageMoves.
+	racks, otherRack bool
+	open             bool // enter: there is a slot under the cursor
+	assign           bool // a: that slot is free and in service
+	release          bool // x: that slot holds a C/L/E assignment
+}
+
+// offers reads storageGridOffers off the screen.
+//
+// THE DIRECTIONS ARE GATED ONE AT A TIME, because the movement is two
+// dimensional and each axis has two edges. The cursor lists this record grew
+// up on name `j/k ↑↓` as one PAIR wherever there is a second row, and on a
+// list that is the right grain: a cursor at the top has one direction to go
+// and the bar says there is movement. A grid cursor in a corner has two of four
+// directions, and one on a rack a single level tall has no vertical movement at
+// all — so a pair-grained bar would name `k ↑` in the top row of a tall rack,
+// where it does nothing, and the whole vertical pair over a one-level rack.
+// Each direction is asked of the SAME predicate its arm moves by
+// (positionTarget, levelTarget), so a name and a move cannot come apart.
+//
+// `home`/`end` set the position unconditionally, so they move exactly where the
+// cursor is not already on that position.
+//
+// The row actions follow the cell, as on the slot detail: `a` where
+// openAssign would open the form, `x` where startRelease would open the
+// confirm. Elsewhere those keys still answer, with a toast naming the remedy —
+// a decline that says why, which changes no pane and so is not an act the bar
+// owes a word to.
+func (s *StorageOverviewScreen) offers() storageGridOffers {
+	var o storageGridOffers
+	r := s.rack()
+	if r == nil {
+		return o
+	}
+	_, o.left = s.positionTarget(-1)
+	_, o.right = s.positionTarget(+1)
+	_, o.up = s.levelTarget(-1)
+	_, o.down = s.levelTarget(+1)
+	o.home = s.position != 1
+	o.end = s.position != r.MaxPosition
+	o.racks = s.rackPageMoves()
+	o.otherRack = o.racks && len(s.overview.Racks) > 1
+	if cell := s.cell(); cell != nil {
+		o.open = true
+		o.assign = storageCellAssignable(cell)
+		o.release = storageCellReleasable(cell)
+	}
+	return o
+}
+
+// storageCellAssignable is openAssign's "this opens the form" — a free slot in
+// service.
+func storageCellAssignable(cell *omsapi.StorageOverviewCell) bool {
+	return cell.Type == "" && cell.IsActive
+}
+
+// storageCellReleasable is startRelease's "this opens the confirm" — a C/L/E
+// holding, never a project stint.
+func storageCellReleasable(cell *omsapi.StorageOverviewCell) bool {
+	return cell.Type != "" && cell.Type != omsapi.StorageTypeLetterProject
+}
+
+// storageGridBar is the bar for a set of offers. The order is the order drawn:
+// the movement, the row actions, then the reload and the way back.
+//
+// A DIRECTION SPELLS BOTH ITS KEYS — the letter and the arrow — because the arms
+// bind both, and a pair axis whose two directions both move is ONE segment so
+// the bar does not spend a joint on each.
+//
+// THE WORDS ARE CUT TO FOLD THE CEILING ONTO THREE ROWS at the 51 cells an
+// 80-column pane gives, and every row a fold spends is a level row the grid does
+// not draw. `home/end row ends` rather than `first/last position` is the whole of
+// the fourth row: the longer wording put the first fold one cell past the pane.
+func storageGridBar(o storageGridOffers) proseBar {
+	var out proseBar
+	axis := func(back, fwd bool, backKeys, fwdKeys [2]string, noun string) {
+		switch {
+		case back && fwd:
+			out = append(out, proseBarItem{
+				Keys: []string{backKeys[0], fwdKeys[0], backKeys[1], fwdKeys[1]},
+				Hint: backKeys[0] + "/" + fwdKeys[0] + " " + storageArrow(backKeys[1]) + storageArrow(fwdKeys[1]) + " " + noun,
+			})
+		case back:
+			out = append(out, proseBarItem{Keys: backKeys[:], Hint: backKeys[0] + " " + storageArrow(backKeys[1]) + " " + noun})
+		case fwd:
+			out = append(out, proseBarItem{Keys: fwdKeys[:], Hint: fwdKeys[0] + " " + storageArrow(fwdKeys[1]) + " " + noun})
+		}
+	}
+	axis(o.left, o.right, [2]string{"h", "left"}, [2]string{"l", "right"}, "position")
+	axis(o.up, o.down, [2]string{"k", "up"}, [2]string{"j", "down"}, "level")
+	switch {
+	case o.home && o.end:
+		out = append(out, proseBarItem{Keys: []string{"home", "end"}, Hint: "home/end row ends"})
+	case o.home:
+		out = append(out, proseBarItem{Keys: []string{"home"}, Hint: "home row start"})
+	case o.end:
+		out = append(out, proseBarItem{Keys: []string{"end"}, Hint: "end row end"})
+	}
+	if o.racks {
+		out = append(out, proseBarItem{Keys: []string{"pgup", "pgdown"}, Hint: storageRackPageHint(o.otherRack)})
+	}
+	if o.open {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter open slot"})
+	}
+	if o.assign {
+		out = append(out, proseBarItem{Keys: []string{"a"}, Hint: "a assign C/L/E"})
+	}
+	if o.release {
+		out = append(out, proseBarItem{Keys: []string{"x"}, Hint: "x release"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// storageRackPageHint words pgup/pgdn: a page to another rack, or — on racking
+// with one rack — the jump to its top-left that moveRack's wrap makes.
+func storageRackPageHint(otherRack bool) string {
+	if otherRack {
+		return "pgup/pgdn rack"
+	}
+	return "pgup/pgdn top-left"
+}
+
+// storageArrow is the glyph a direction's arrow key is drawn as.
+func storageArrow(key string) string {
+	return map[string]string{"left": "←", "right": "→", "up": "↑", "down": "↓"}[key]
+}
+
+// storageGridCeilingRows is the TALLEST the bar can fold to at `cells`: every
+// direction, both jumps, every row action and the longer rack wording at once.
+//
+// No cursor draws that union — `a` and `x` never share a cell, and the two rack
+// wordings never share racking — and it does not need to: a ceiling only has to
+// be at least as tall as any bar that IS drawn, and the bars fold at their ` · `
+// joints greedily, where taking a segment out never adds a row.
+func storageGridCeilingRows(cells int) int {
+	all := storageGridOffers{
+		left: true, right: true, up: true, down: true, home: true, end: true,
+		racks: true, open: true, assign: true, release: true,
+	}
+	rows := storageGridBar(all).rows(cells)
+	all.otherRack = true
+	if other := storageGridBar(all).rows(cells); other > rows {
+		rows = other
+	}
+	return rows
+}
+
+// proseBar is the bar the grid is DRAWING: nil while the release confirm is up,
+// which names its own two keys in the bar's place. A load in flight or failed
+// draws loadBar's; racking with no rack at all offers the reload and the way
+// out, since every other key there answers with a toast.
+func (s *StorageOverviewScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.confirmingRelease {
+		return nil
+	}
+	return storageGridBar(s.offers())
+}
+
+// loadBar is the bar while the load is out or has failed — what the key switch
+// answers with no grid drawn (prose_bar.go carries the defect and the decision).
+// On a FIRST load there is no racking, so the reload and the way back are all.
+// A REFRESH keeps the grid it had, and two keys still act on the cell under
+// that cursor, which the frame no longer draws: `enter` opens the slot and `a`
+// opens the assign form where the cell is free. Named because they act, and
+// candidates for gating. The movement keys and `x` are not named, and the gate
+// in Update ignores them: all they would do is move a cursor nothing draws, or
+// arm a confirm nobody can read.
+func (s *StorageOverviewScreen) loadBar() proseBar {
+	var out proseBar
+	if cell := s.cell(); cell != nil {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter open slot"})
+		if storageCellAssignable(cell) {
+			out = append(out, proseBarItem{Keys: []string{"a"}, Hint: "a assign C/L/E"})
+		}
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
+}
+
+// ---------------------------------------------------------------------------
+// The frame's lines
+// ---------------------------------------------------------------------------
+
+// headerLines is the rack's summary folded to the pane: which rack, the slot
+// counts, which positions the window shows, and how many cells need attention.
+//
+// FOLDED, where it used to be one line past the pane: at 80 columns a paged
+// rack's summary is past 51 cells before the window slice or the attention count
+// is added, and clampToBox took the tail with no mark — which is where both of
+// those facts sit. The attention count keeps its warning colour on whichever
+// fold it lands.
+func (s *StorageOverviewScreen) headerLines(r *omsapi.StorageOverviewRack, cells int) []string {
 	parts := []string{fmt.Sprintf("Rack %d", r.Rack)}
 	if n := len(s.overview.Racks); n > 1 {
 		idx := s.rackIndex()
@@ -674,22 +1058,25 @@ func (s *StorageOverviewScreen) headerLine(r *omsapi.StorageOverviewRack) string
 			s.colStart+1, s.colStart+cols, r.MaxPosition))
 	}
 
-	line := StyleMuted.Render(strings.Join(parts, " · "))
+	warn := ""
 	if attention > 0 {
-		line += "  " + StyleStatusWarn.Render(fmt.Sprintf("%d need attention", attention))
+		warn = fmt.Sprintf("%d need attention", attention)
+		parts = append(parts, warn)
 	}
-	return line
+	lines := pickerWrap(strings.Join(parts, " · "), cells)
+	for i, line := range lines {
+		if warn != "" && strings.HasSuffix(line, warn) {
+			lines[i] = StyleMuted.Render(strings.TrimSuffix(line, warn)) + StyleStatusWarn.Render(warn)
+			continue
+		}
+		lines[i] = StyleMuted.Render(line)
+	}
+	return lines
 }
 
-// gridBlock draws the rulers and the level rows.
-func (s *StorageOverviewScreen) gridBlock(r *omsapi.StorageOverviewRack) string {
-	cols := s.gridColumns()
-	if cols > r.MaxPosition-s.colStart {
-		cols = r.MaxPosition - s.colStart
-	}
-	if cols < 1 {
-		cols = 1
-	}
+// gridBlock draws the rulers and a window of `rows` level rows.
+func (s *StorageOverviewScreen) gridBlock(r *omsapi.StorageOverviewRack, rows int) string {
+	cols := s.visibleColumns(r)
 
 	var b strings.Builder
 	if tens := storageGridTensRuler(s.colStart, cols); tens != "" {
@@ -697,7 +1084,6 @@ func (s *StorageOverviewScreen) gridBlock(r *omsapi.StorageOverviewRack) string 
 	}
 	b.WriteString(StyleMuted.Render(storageGridPositionRuler(s.colStart, cols)) + "\n")
 
-	rows := s.gridRows()
 	end := s.rowStart + rows
 	if end > len(r.Rows) {
 		end = len(r.Rows)
@@ -803,7 +1189,14 @@ func (s *StorageOverviewScreen) renderGridRow(row omsapi.StorageOverviewRow, col
 // cursorLine says what the cell under the cursor actually is — the grid's one
 // character can only carry so much, and this is where "who is in 1A4, and why
 // is it yellow?" gets answered.
-func (s *StorageOverviewScreen) cursorLine() string {
+//
+// ONE ROW, CLIPPED WITH THE CUT MARKED. The occupant is an OMS display name and
+// is the only unbounded part, so it is what gives: the code leads and the status
+// trails, and the words between are cut to the cells those two leave. It is not
+// folded, because a row count that changed with the cell under the cursor would
+// move the window on a key that only meant to move the cursor. It used to be
+// cut at 60 runes and then again, unmarked, at the pane's 51 cells.
+func (s *StorageOverviewScreen) cursorLine(cells int) string {
 	r := s.rack()
 	if r == nil {
 		return ""
@@ -811,7 +1204,7 @@ func (s *StorageOverviewScreen) cursorLine() string {
 	addr := fmt.Sprintf("%d%s%d", r.Rack, s.level, s.position)
 	cell := s.cell()
 	if cell == nil {
-		return StyleTitle.Render(addr) + StyleMuted.Render("  no slot at this position")
+		return StyleTitle.Render(addr) + StyleMuted.Render(pickerClip("  no slot at this position", cells-lipgloss.Width(addr)))
 	}
 
 	parts := []string{}
@@ -827,25 +1220,75 @@ func (s *StorageOverviewScreen) cursorLine() string {
 		parts = append(parts, "out of service — not offered")
 	}
 
-	line := StyleTitle.Render(cell.Code) + "  " + truncateOneLine(strings.Join(parts, " · "), 60)
+	code := pickerClip(jdeStatusOneLine(cell.Code), cells)
+	status, statusStyle := "", StyleMuted
 	if cell.Status != "" && cell.Status != omsapi.StorageOverviewStatusEmpty {
-		status := strings.ReplaceAll(cell.Status, "_", " ")
+		status = "  " + jdeStatusOneLine(strings.ReplaceAll(cell.Status, "_", " "))
 		if class := storageGridCellClass(cell); class == omsapi.StorageOverviewColorRed ||
 			class == omsapi.StorageOverviewColorYellow {
-			line += "  " + storageGridStyles[class].Render(status)
-		} else {
-			line += StyleMuted.Render("  " + status)
+			statusStyle = storageGridStyles[class]
 		}
+	}
+	room := cells - lipgloss.Width(code) - 2 - lipgloss.Width(status)
+	if room < 1 && status != "" {
+		// A pane too narrow for the status beside the code keeps the code and
+		// what the cell holds, which is what the line is for.
+		status = ""
+		room = cells - lipgloss.Width(code) - 2
+	}
+	line := StyleTitle.Render(code)
+	if room > 0 {
+		line += "  " + pickerClip(jdeStatusOneLine(strings.Join(parts, " · ")), room)
+	}
+	if status != "" {
+		line += statusStyle.Render(status)
 	}
 	return line
 }
 
-func storageGridLegend() string {
-	return StyleMuted.Render("P=Project  C=Committee  L=Logistics  E=Class  ·  . = empty  ·  ") +
-		storageGridStyles[omsapi.StorageOverviewColorYellow].Render("yellow = expiring soon") +
-		StyleMuted.Render("  ") +
-		storageGridStyles[omsapi.StorageOverviewColorRed].Render("red = expired, move to purgatory") +
-		StyleMuted.Render("  ·  dim = no slot / out of service")
+// storageGridLegendSegments are the legend's claims, in the order drawn, with
+// the colour each is written in. Only the two colour claims are coloured — they
+// are the ones that say what a coloured cell MEANS.
+var storageGridLegendSegments = []struct {
+	text  string
+	style lipgloss.Style
+}{
+	{"P=Project  C=Committee  L=Logistics  E=Class", StyleMuted},
+	{". = empty", StyleMuted},
+	{"yellow = expiring soon", storageGridStyles[omsapi.StorageOverviewColorYellow]},
+	{"red = expired, move to purgatory", storageGridStyles[omsapi.StorageOverviewColorRed]},
+	{"dim = no slot / out of service", StyleMuted},
+}
+
+// storageGridLegendLines is the legend folded to the pane at its ` · ` joints,
+// each claim in its own colour.
+//
+// FOLDED, where it used to be one line of about 130 cells: at 80 columns
+// clampToBox kept the letters and took every colour claim off the pane, with no
+// mark — so the one screen built to be read by its colours never said what they
+// meant.
+func storageGridLegendLines(cells int) []string {
+	texts := make([]string, len(storageGridLegendSegments))
+	styles := map[string]lipgloss.Style{}
+	for i, seg := range storageGridLegendSegments {
+		texts[i] = seg.text
+		styles[seg.text] = seg.style
+	}
+	lines := pickerWrap(strings.Join(texts, " · "), cells)
+	for i, line := range lines {
+		body := strings.TrimLeft(line, " ")
+		indent := line[:len(line)-len(body)]
+		pieces := strings.Split(body, " · ")
+		for j, piece := range pieces {
+			style, ok := styles[piece]
+			if !ok {
+				style = StyleMuted
+			}
+			pieces[j] = style.Render(piece)
+		}
+		lines[i] = indent + strings.Join(pieces, StyleMuted.Render(" · "))
+	}
+	return lines
 }
 
 func (s *StorageOverviewScreen) noSlotText() string {
@@ -856,17 +1299,27 @@ func (s *StorageOverviewScreen) noSlotText() string {
 	return fmt.Sprintf("no slot at %d%s%d — the racking has a hole there", r.Rack, s.level, s.position)
 }
 
-func (s *StorageOverviewScreen) releaseConfirmText() string {
+// releaseConfirmText is the confirm drawn in the bar's place, folded to the
+// pane. It names its own two keys, the shape every y/n confirm on these screens
+// keeps, and layout counts its folded rows as the foot — the question and the
+// keys that answer it are what a short pane must not take.
+func (s *StorageOverviewScreen) releaseConfirmText(cells int) string {
 	cell := s.cell()
 	if cell == nil {
 		return ""
 	}
 	if s.releasing {
-		return StyleMuted.Render("Releasing…")
+		return StyleMuted.Render(pickerClip("Releasing…", cells))
 	}
-	body := StyleStatusWarn.Render(fmt.Sprintf("Release %s from %s (%s)?",
-		cell.Code, firstNonEmpty(cell.Occupant, "its holder"), storageTypeName(cell.Type))) + "\n"
-	body += StyleMuted.Render("The holding is kept as history — the slot just becomes assignable again.") + "\n"
-	body += StyleMuted.Render("y release · n/esc cancel")
-	return body
+	fold := func(style lipgloss.Style, text string) string {
+		lines := pickerWrap(text, cells)
+		for i, line := range lines {
+			lines[i] = style.Render(line)
+		}
+		return strings.Join(lines, "\n")
+	}
+	return fold(StyleStatusWarn, jdeStatusOneLine(fmt.Sprintf("Release %s from %s (%s)?",
+		cell.Code, firstNonEmpty(cell.Occupant, "its holder"), storageTypeName(cell.Type)))) + "\n" +
+		fold(StyleMuted, "The holding is kept as history — the slot just becomes assignable again.") + "\n" +
+		fold(StyleMuted, "y release · n/esc cancel")
 }

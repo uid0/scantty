@@ -186,7 +186,12 @@ var proseBarUnconverted = map[string]string{
 	// shape: the universal search palette, a flat list drawn under a LIVE QUERY
 	// BOX whose results stay on the pane while a search is out — so the box leads,
 	// the bar closes and the rows are budgeted between them:
-	// prose_bar_search_palette_test.go carries it.
+	// prose_bar_search_palette_test.go carries it. The storage overview went on
+	// its own after those, because it is not a list of rows at all: a rack GRID
+	// whose cursor moves in two dimensions, so each direction is gated on its own
+	// rather than as a pair, and whose header, cursor line and legend had to fold
+	// or clip before the window could be budgeted from them —
+	// prose_bar_storage_overview_test.go carries it.
 	// What remains divides:
 	//
 	//   - STILL ON THAT RECIPE, but not mechanically. It has a window and a
@@ -197,8 +202,9 @@ var proseBarUnconverted = map[string]string{
 	//     says, and folding alone would not put it back. The ones that were
 	//     nothing more than that are converted, and so are the ones whose only
 	//     complication was a surface drawn in their place or under their rows;
-	//     the one left here has something none of those answers — a layout that
-	//     is not a list of rows — and its entry says so.
+	//     the last two had something none of those answers — an overlay with a
+	//     live query box, and a layout that is not a list of rows — and both
+	//     are converted now (see above), so none is left here.
 
 	// Still on the windowed recipe.
 	"AssetPartsScreen": "the parts list on an asset. It is on the windowed-cursor-list " +
@@ -215,7 +221,6 @@ var proseBarUnconverted = map[string]string{
 		"this list does rather than about what its bar says",
 
 	// Flat: no window at all, so the bar and the body budget are one piece of work.
-	"StorageOverviewScreen": "the storage overview, a rack grid rather than a row list",
 
 	// THE ONES THAT ARE NEITHER A SCROLLED SHEET NOR A PLAIN CURSOR LIST, each
 	// saying what it is instead — a detail sheet with no window, or not a screen
@@ -619,6 +624,9 @@ func proseBarFixtures() []proseBarFixture {
 	// The shared REPORT TABLE, on more than one report, the eleventh — see
 	// proseBarReportTableFixtures.
 	out = append(out, proseBarReportTableFixtures()...)
+	// The storage overview, a rack grid gated per direction — see
+	// proseBarStorageOverviewFixtures.
+	out = append(out, proseBarStorageOverviewFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are

@@ -183,7 +183,7 @@ func TestStorageOverview_ColorsComeFromTheBackend(t *testing.T) {
 func TestStorageOverview_RetiredSlotIsNamed(t *testing.T) {
 	s := loadedOverview(t)
 	s.level, s.position = "C", 4
-	if got := stripANSI(s.cursorLine()); !strings.Contains(got, "out of service") {
+	if got := stripANSI(s.cursorLine(proseBarCells(s.terminalWidth))); !strings.Contains(got, "out of service") {
 		t.Errorf("cursor line for a retired slot = %q, want it to say out of service", got)
 	}
 	if class := storageGridCellClass(s.cell()); class != "retired" {
@@ -382,7 +382,7 @@ func TestStorageOverview_ReleaseOnlyForAssignments(t *testing.T) {
 	if !s.WantsRawInput() {
 		t.Error("the confirm must claim raw input so n=no doesn't open notifications")
 	}
-	if got := stripANSI(s.releaseConfirmText()); !strings.Contains(got, "Welding SIG") {
+	if got := stripANSI(s.releaseConfirmText(proseBarCells(s.terminalWidth))); !strings.Contains(got, "Welding SIG") {
 		t.Errorf("confirm = %q, want it to name the holder", got)
 	}
 	s = overviewKey(t, s, "n")
