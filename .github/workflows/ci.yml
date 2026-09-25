@@ -101,9 +101,10 @@ jobs:
       # runner), so about 300s each is expected here and a shard has roughly
       # 2x; a hang reports in ten minutes rather than twenty. When a shard nears
       # its bound the answer is another shard number in heavy_tests.txt, not a
-      # bigger number here. The script fails the job unless every test marked
-      # for the shard reported a PASS, so a shard that silently ran nothing
-      # cannot go green.
+      # bigger number here (shard 1 reached it on 2026-09-25 and shard 4 was
+      # split out of it; heavy_tests.txt has the numbers). The script fails the
+      # job unless every test marked for the shard reported a PASS, so a shard
+      # that silently ran nothing cannot go green.
       - name: go test (heavy shard ${{ matrix.shard }})
         run: .github/scripts/tui-heavy-shard.sh "${{ matrix.shard }}" -timeout 10m
 

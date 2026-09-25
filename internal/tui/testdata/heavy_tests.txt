@@ -29,15 +29,18 @@
 # test whose subtests call t.Parallel reports 0.
 #
 # THE SHARD NUMBER only balances the CI jobs; CI derives its matrix from the
-# numbers used here, so adding shard 4 adds a job. The three shards were
-# balanced to roughly equal estimated cost when the split was made.
+# numbers used here, so a new shard number adds a job. The first three shards
+# were balanced to roughly equal estimated cost when the split was made. Shard
+# 4 was split out of shard 1 on 2026-09-25, when shard 1 reached its 10m bound
+# on CI: 631s locally, 289s of it TestProseBar_TheFooterSurvivesEveryDrawablePane,
+# so that sweep and two small tests make shard 4 (316s) and the rest stay (315s).
 
 2 TestAssetDocuments_ABadPathUploadsNothing
 3 TestAssetDocuments_PreUploadRefreshCannotHideTheUploadedRow
-1 TestAssetDocuments_SupersedingPostsToItsOwnRouteAndOmitsWhatItKeeps
+4 TestAssetDocuments_SupersedingPostsToItsOwnRouteAndOmitsWhatItKeeps
 2 TestAssetDocuments_UploadingSendsTheWebsOwnMultipart
 3 TestAssetMeters_AdjustingPostsTheCorrectionAndItsReason
-1 TestAssetMeters_AnAdjustmentAfterFailedRefreshIsConfirmedThenWritten
+4 TestAssetMeters_AnAdjustmentAfterFailedRefreshIsConfirmedThenWritten
 2 TestAssetMeters_AnAdjustmentDuringRefreshIsConfirmedThenWritten
 3 TestHeaderFold_AFoldedValueIsWholeAbsentOrMarked
 2 TestJDEForm_ARefusedPaneKeepsTheOperatorsPlace
@@ -79,7 +82,7 @@
 3 TestProseBarWindowedList_MultiLineNamesFitThePaneAndMarkTheirCut
 1 TestProseBar_ALoadFrameKeepsItsBarWhereverTheFailureHeadAndTheBarFit
 1 TestProseBar_TheFooterNamesExactlyTheKeysThatWork
-1 TestProseBar_TheFooterSurvivesEveryDrawablePane
+4 TestProseBar_TheFooterSurvivesEveryDrawablePane
 3 TestReceive_ABodyNoKeyCanMoveLeadsWithWhatTheOperatorNeeds
 2 TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs
 3 TestReceive_EveryNoteFitsItsReservation
