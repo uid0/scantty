@@ -200,6 +200,8 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen { return NewSIGListScreen(d) }},
 		{name: "sig members", recv: "SIGMembersScreen", loaded: "sig members", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewSIGMembersScreen(d, 3, "Metal Fabrication SIG") }},
+		{name: "storage slots", recv: "StorageSlotsScreen", loaded: "storage slots", reload: "r",
+			fresh: func(d Deps) proseBarScreen { return NewStorageSlotsScreen(d) }},
 		{name: "storage slot detail", recv: "StorageSlotDetailScreen", loaded: "storage slot detail/free", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewStorageSlotDetailScreen(d, "1A1") }},
 		{name: "supplier detail", recv: "SupplierDetailScreen", loaded: "supplier detail", reload: "r",

@@ -13,11 +13,13 @@
 // gated IsStorageAdminOrStaff server-side; the screen mounts under Facilities,
 // which is already staff-only, and a 403 still surfaces as a clean message.
 //
-// Keys: j/k move · enter open · n new slot · b generate a rack · E edit ·
-// x delete · space select for printing · c clear selection · p print cards ·
-// f cycle the occupancy filter · / scope to a rack (or a rack + level) ·
-// r refresh. n/G/f// collide with global hotkeys and are claimed via
-// HandlesKey; the screen goes raw-input only while an overlay is up.
+// Keys: the whole movement vocabulary · enter open · n new slot · b generate a
+// rack · E edit · x delete · space select for printing · c clear selection ·
+// p print cards · f cycle the occupancy filter · / scope to a rack (or a rack +
+// level) · r refresh. The bar is a RECORD (proseBar, prose_bar.go) naming
+// exactly the ones that act where the cursor is. n/G/f// collide with global
+// hotkeys and are claimed via HandlesKey; the screen goes raw-input only while
+// an overlay is up.
 package tui
 
 import (
@@ -29,6 +31,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -61,6 +64,7 @@ type StorageSlotsScreen struct {
 	windowSize     int
 	loading        bool
 	loadErr        string
+	terminalWidth  int
 	terminalHeight int
 
 	filterIdx int
@@ -73,6 +77,10 @@ type StorageSlotsScreen struct {
 	scoping    bool
 	scopeInput textinput.Model
 	scopeErr   string
+	// scopeRefused is the value scopeErr refused, so the bar can tell a box
+	// still holding it — where enter can only refuse again — from one that has
+	// been edited since.
+	scopeRefused string
 
 	// Print selection, in TOGGLE order — the cards endpoint prints explicit ids
 	// in the order they were given, which is what makes "reprint these four
@@ -177,19 +185,30 @@ func (s *StorageSlotsScreen) Init() tea.Cmd {
 	}
 }
 
+// computeWindowSize is how many rows a PAGE is: the body budget the frame
+// draws the list into while the BAR is the foot, which is the only foot the
+// pager is ever pressed under (every overlay owns the keyboard).
+//
+// IT USED TO BE `screenBodyHeight - 6`, a constant counting the header, the
+// blank, a footer and "overlay room" together, and both halves of that were
+// wrong: a footer that names what the screen binds is a folded record several
+// rows tall at 80 columns, and slotCardPrompt's overlay took five, so a long list assembled a
+// frame taller than the pane with the print prompt open and clampToBox took the
+// prompt's own keys off the bottom. The two costs are separate now — the bar's
+// here, measured off its ceiling, and an overlay's in foot, measured off what it
+// draws — and neither is a number written down.
 func (s *StorageSlotsScreen) computeWindowSize() int {
-	const chrome = 6 // header + blank + help + overlay room
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
-	}
-	return avail
+	cells := s.paneCells()
+	return proseFlatListBudget(s.head(cells), s.terminalHeight, cells, s.ceilingBar())
 }
+
+// paneCells is the width this list folds, clips and budgets against.
+func (s *StorageSlotsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
 
 func (s *StorageSlotsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -256,6 +275,12 @@ func (s *StorageSlotsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func (s *StorageSlotsScreen) updateList(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+		return s, nil
+	}
+	// The header folds, and selecting a slot can add a row to it, so a page is
+	// asked of the frame as it stands rather than of the one last sized.
+	s.windowSize = s.computeWindowSize()
 	switch m.String() {
 	case "j", "down":
 		if s.cursor < len(s.rows)-1 {
@@ -439,6 +464,7 @@ func (s *StorageSlotsScreen) updateScope(m tea.KeyMsg) (Screen, tea.Cmd) {
 		rack, level, err := parseSlotScope(s.scopeInput.Value())
 		if err != nil {
 			s.scopeErr = err.Error()
+			s.scopeRefused = s.scopeInput.Value()
 			return s, nil
 		}
 		s.scoping = false
@@ -541,57 +567,225 @@ func (s *StorageSlotsScreen) scopeLabel() string {
 	return strconv.Itoa(s.scopeRack) + s.scopeLevel
 }
 
+// ---------------------------------------------------------------------------
+// Bar
+// ---------------------------------------------------------------------------
+
+// bar names every key that acts on the list, as a record the honesty sweep can
+// press (prose_bar.go).
+//
+// It used to be two literals written under the rows —
+//
+//	j/k move · enter open · n new · b generate rack · E edit · x delete
+//	space select · c clear · p print cards · f filter · / rack · r refresh
+//
+// — which named two of the ten movement keystrokes the switch binds, named the
+// row actions over an empty list where they do nothing, named `c` with nothing
+// selected and `p` where it can only decline, and ran past the 51 cells an
+// 80-column pane gives, so clampToBox took the end of both lines. Each segment
+// is now gated on the fact its arm is gated on: a second row (proseNavCursor),
+// a row under the cursor, a selection to clear, and something to print
+// (canPrint, the same precedence openCardPrompt reads).
+func (s *StorageSlotsScreen) bar(moves, onRow, selected, printable bool) proseBar {
+	out := proseNavCursor(moves)
+	if onRow {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter open"})
+	}
+	out = append(out,
+		proseBarItem{Keys: []string{"n"}, Hint: "n new"},
+		proseBarItem{Keys: []string{"b"}, Hint: "b generate rack"},
+	)
+	if onRow {
+		out = append(out,
+			proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+			proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+			proseBarItem{Keys: []string{" "}, Hint: "space select"},
+		)
+	}
+	if selected {
+		out = append(out, proseBarItem{Keys: []string{"c"}, Hint: "c clear"})
+	}
+	if printable {
+		out = append(out, proseBarItem{Keys: []string{"p"}, Hint: "p print cards"})
+	}
+	return append(out,
+		proseBarItem{Keys: []string{"f"}, Hint: "f filter"},
+		proseBarItem{Keys: []string{"/"}, Hint: "/ rack"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// ceilingBar is the bar at its TALLEST, which is what the body is budgeted
+// against for the reason proseListWindow gives: a budget taken from the live bar
+// changes when a segment comes off, and the rows it leaves are an input to what
+// the list shows.
+func (s *StorageSlotsScreen) ceilingBar() proseBar { return s.bar(true, true, true, true) }
+
+// canPrint reports whether `p` opens the print prompt rather than declining:
+// a selection, a rack scope, or a row under the cursor to take the rack from.
+func (s *StorageSlotsScreen) canPrint() bool {
+	_, onRow := s.selectedRow()
+	return len(s.selection) > 0 || s.scopeRack > 0 || onRow
+}
+
+// proseBar is the bar this screen is DRAWING: loadBar's while a load is out or
+// has failed, the scope prompt's while it is open, the list's otherwise — and
+// nil under the delete confirm and the print prompt, which name their own keys.
+// The print prompt is slotCardPrompt, a recorded exception (proseBarUnconverted)
+// rather than a surface this record answers for; what this screen owes it is
+// ROOM, which foot gives it.
+func (s *StorageSlotsScreen) proseBar() proseBar {
+	switch {
+	case s.loading || s.loadErr != "":
+		return s.loadBar()
+	case s.scoping:
+		return s.scopeBar()
+	case s.confirmShown(), s.card.active:
+		return nil
+	}
+	_, onRow := s.selectedRow()
+	return s.bar(listNavMoves(len(s.rows)), onRow, len(s.selection) > 0, s.canPrint())
+}
+
+// loadBar is the list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `n` and `b` open their forms whatever the list holds, `f`
+// reloads under the next filter, and after a failed REFRESH `enter` and `E` still
+// open the slot the kept rows leave under the cursor, which the frame no longer
+// draws — named because they act, and candidates for gating. The movement keys,
+// `x`, space, `c`, `p` and `/` would change only state no load frame draws (a
+// cursor, an armed confirm, a selection, a prompt), so they are not named and
+// are ignored.
+func (s *StorageSlotsScreen) loadBar() proseBar {
+	var out proseBar
+	_, onRow := s.selectedRow()
+	if onRow {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter open"})
+	}
+	out = append(out,
+		proseBarItem{Keys: []string{"n"}, Hint: "n new"},
+		proseBarItem{Keys: []string{"b"}, Hint: "b generate rack"},
+	)
+	if onRow {
+		out = append(out, proseBarItem{Keys: []string{"E"}, Hint: "E edit"})
+	}
+	return append(out,
+		proseBarItem{Keys: []string{"f"}, Hint: "f filter"},
+		proseBarReloadFor(s.loadErr != ""),
+		proseBarEsc,
+	)
+}
+
+// scopeBar is the `/` prompt's bar. Every other key goes into the box, which is
+// what makes it a typing surface rather than a list.
+//
+// `enter` comes off while the box still holds the value it last refused: there
+// it re-parses the same text into the same refusal, which redraws the pane byte
+// for byte, and the refusal row above the bar has already said why. Any edit
+// puts it back.
+func (s *StorageSlotsScreen) scopeBar() proseBar {
+	var out proseBar
+	if s.scopeErr == "" || s.scopeInput.Value() != s.scopeRefused {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter apply (blank: every rack)"})
+	}
+	return append(out, proseBarItem{Keys: []string{"esc"}, Hint: "esc cancel"})
+}
+
+// confirmShown reports whether the delete confirm is what the foot draws. It is
+// armed only over a row, so the second half is a guard rather than a state.
+func (s *StorageSlotsScreen) confirmShown() bool {
+	_, ok := s.selectedRow()
+	return s.confirmingDelete && ok
+}
+
+// slotListStaffNote is the standing fact under a failed load: the likeliest
+// failure is a 403, and it is not the operator's to retry away.
+const slotListStaffNote = "slot management is staff / Storage Admin only"
+
+// ---------------------------------------------------------------------------
+// View
+// ---------------------------------------------------------------------------
+
+// View draws the slots as a window between the header and the FOOT
+// (proseFlatListFrameFoot), where the foot is whichever of the bar, the scope
+// prompt, the delete confirm and the print prompt is up.
+//
+// THE FOOT IS SPENT BEFORE THE WINDOW GETS A LINE, and that is the whole of the
+// fix. Every one of those was written under a window budgeted by a constant, so
+// on a long list the print prompt's five rows ran the frame past the pane and
+// clampToBox, which drops from the BOTTOM, took `enter render · esc cancel` —
+// measured at 80x24 before the conversion: 21 rows for an 18-row pane. A slot
+// whose stored group name carries newlines drew every one of them, 50 rows for
+// the same pane with the bar gone; proseWriteRows clips such a row to the budget
+// and says how much it left out.
 func (s *StorageSlotsScreen) View() string {
+	cells := s.paneCells()
 	if s.loading {
-		return StyleMuted.Render("Loading storage slots…")
+		return proseLoadingFrame("Loading storage slots…", cells, s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" +
-			StyleMuted.Render("press r to retry · slot management is staff / Storage Admin only")
+		return proseRefusalFrame("Error: ", StyleStatusError, s.loadErr, slotListStaffNote, s.terminalHeight, cells, s.proseBar())
 	}
+	rows := make([]string, len(s.rows))
+	for i := range s.rows {
+		rows[i] = s.renderRow(i, cells)
+	}
+	foot, footRows := s.foot(cells)
+	return proseFlatListFrameFoot(s.head(cells), rows, s.cursor, &s.windowStart, s.terminalHeight, footRows, foot)
+}
 
-	var b strings.Builder
-	b.WriteString(s.header() + "\n\n")
-
+// head is what the window is drawn under: the header, a blank, and on an empty
+// list the sentence saying which kind of empty it is.
+func (s *StorageSlotsScreen) head(cells int) string {
+	h := s.header(cells) + "\n\n"
 	if len(s.rows) == 0 {
-		b.WriteString(s.emptyText() + "\n")
-	} else {
-		end := s.windowStart + s.windowSize
-		if end > len(s.rows) {
-			end = len(s.rows)
-		}
-		if s.windowStart > 0 {
-			b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", s.windowStart)) + "\n")
-		}
-		for i := s.windowStart; i < end; i++ {
-			b.WriteString(s.renderRow(i) + "\n")
-		}
-		if end < len(s.rows) {
-			b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
-		}
+		h += s.emptyText() + "\n"
 	}
+	return h
+}
 
-	b.WriteString("\n")
+// foot is what is drawn under the rows, and every row it takes — the blank above
+// it included.
+//
+// THE BAR'S COST AND AN OVERLAY'S ARE MEASURED SEPARATELY. The bar is counted at
+// its ceiling (see ceilingBar), which is also what a page is
+// (computeWindowSize). An overlay is counted as it is DRAWN — the scope prompt,
+// the delete confirm, slotCardPrompt — because each is a surface of its own
+// shape, and a reservation standing in for all of them was the constant this
+// replaced: too little for the print prompt and too much for everything else.
+func (s *StorageSlotsScreen) foot(cells int) (string, int) {
+	var foot string
 	switch {
 	case s.scoping:
-		b.WriteString(StyleTitle.Render("Scope to rack: ") + s.scopeInput.View() + "\n")
-		if s.scopeErr != "" {
-			b.WriteString(StyleStatusError.Render("✗ "+s.scopeErr) + "\n")
-		}
-		b.WriteString(StyleMuted.Render("enter apply · blank shows every rack · esc cancel"))
-	case s.confirmingDelete:
-		b.WriteString(s.deleteConfirmText())
+		foot = s.scopePrompt(cells)
+	case s.confirmShown():
+		foot = s.deleteConfirmText()
 	case s.card.active:
-		b.WriteString(s.card.view())
+		foot = s.card.view(cells)
 	default:
-		b.WriteString(StyleMuted.Render(
-			"j/k move · enter open · n new · b generate rack · E edit · x delete\n" +
-				"space select · c clear · p print cards · f filter · / rack · r refresh"))
+		return s.proseBar().render(cells), s.ceilingBar().rows(cells)
 	}
+	return foot, 1 + strings.Count(foot, "\n") + 1
+}
+
+// scopePrompt is the `/` prompt as a foot: the box, bounded to the pane so the
+// caret stays on it; the refusal, held to one marked row; and the bar.
+func (s *StorageSlotsScreen) scopePrompt(cells int) string {
+	const prefix = "Scope to rack: "
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render(prefix) + woBoxView(s.scopeInput, cells, strings.Repeat(" ", lipgloss.Width(prefix))) + "\n")
+	if s.scopeErr != "" {
+		b.WriteString(StyleStatusError.Render("✗ "+proseFormLine(s.scopeErr, cells-2)) + "\n")
+	}
+	b.WriteString("\n" + s.scopeBar().render(cells))
 	return b.String()
 }
 
-func (s *StorageSlotsScreen) header() string {
+// header is the scope, the filter, the count and the selection, folded to the
+// pane at its ` · ` joints: the selection count is the last fact on it and the
+// one a clip would take.
+func (s *StorageSlotsScreen) header(cells int) string {
 	scope := "all racks"
 	if s.scopeRack > 0 {
 		scope = "rack " + strconv.Itoa(s.scopeRack)
@@ -607,7 +801,7 @@ func (s *StorageSlotsScreen) header() string {
 	if n := len(s.selection); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d selected", n))
 	}
-	return StyleMuted.Render(strings.Join(parts, " · "))
+	return pickerHintAt(strings.Join(parts, " · "), cells)
 }
 
 // emptyText distinguishes "this org has no racking" from "nothing matches the
@@ -615,15 +809,35 @@ func (s *StorageSlotsScreen) header() string {
 // former and sends a warden looking for a bug.
 func (s *StorageSlotsScreen) emptyText() string {
 	filtered := s.filterIdx != 0 || s.scopeRack > 0
+	cells := s.paneCells()
 	if !filtered {
-		return StyleMuted.Render("No storage slots yet.") + "\n" +
-			StyleMuted.Render("press b to generate a rack, or n to add a single slot")
+		return pickerHintAt("No storage slots yet.", cells) + "\n" +
+			pickerHintAt("press b to generate a rack, or n to add a single slot", cells)
 	}
-	return StyleMuted.Render(fmt.Sprintf("No slots in the %q view.", storageSlotFilters[s.filterIdx].label)) + "\n" +
-		StyleMuted.Render("press f to cycle the filter · / to change the rack scope")
+	return pickerHintAt(fmt.Sprintf("No slots in the %q view.", storageSlotFilters[s.filterIdx].label), cells) + "\n" +
+		pickerHintAt("press f to cycle the filter · / to change the rack scope", cells)
 }
 
-func (s *StorageSlotsScreen) renderRow(i int) string {
+// slotOccupancyCells is the occupancy column's width where the pane has room
+// for it, and slotOccupancyFloorCells the least it gives up to on a narrow one.
+const (
+	slotOccupancyCells      = 42
+	slotOccupancyFloorCells = 12
+)
+
+// renderRow is one slot, fitted to the pane with every cut marked.
+//
+// THE OCCUPANCY COLUMN GIVES BEFORE THE FLAGS DO. It was padded to a fixed 42
+// cells, so at 80 columns the code, the caret gutter and the padding alone
+// spent the pane and clampToBox took every flag off every row — the marker id a
+// warden scans for included — with no mark saying so. The column now takes what
+// the widest FACTS on the list leave (tag, pallet jack, retired), down to a
+// floor, the same width on every row so the facts still line up, and the name in
+// it abbreviates with an ellipsis. The owning group's NAME is not one of those
+// facts: it is an identifier, it sits last, and it is clipped to what the facts
+// leave on its own row. A stored value with a newline in it keeps the newline,
+// clipped line by line, for the reason proseCursorWindow gives.
+func (s *StorageSlotsScreen) renderRow(i int, cells int) string {
 	slot := s.rows[i]
 	mark := "   "
 	if s.selected[slot.ID] {
@@ -633,12 +847,47 @@ func (s *StorageSlotsScreen) renderRow(i int) string {
 	if i == s.cursor {
 		caret = "▸ "
 	}
-	line := fmt.Sprintf("%s%s %-6s %-42s %s",
-		caret, mark, slot.Code, slotOccupancyText(slot), slotFlagsText(slot))
-	if i == s.cursor {
-		return StyleSidebarItemActive.Render(strings.TrimRight(line, " "))
+	room := cells - StyleSidebarItemActive.GetHorizontalPadding()
+	lead := fmt.Sprintf("%s%s %-6s ", caret, mark, slot.Code)
+	occW := room - lipgloss.Width(lead) - 1 - s.widestFacts()
+	if occW > slotOccupancyCells {
+		occW = slotOccupancyCells
 	}
-	return strings.TrimRight(line, " ")
+	if occW < slotOccupancyFloorCells {
+		occW = slotOccupancyFloorCells
+	}
+	occ := pickerClip(slotOccupancyText(slot), occW)
+	occ += strings.Repeat(" ", occW-lipgloss.Width(occ))
+	line := lead + occ + " " + slotFactsText(slot)
+	if name := slot.OwningGroupName; name != "" {
+		const joint = " · "
+		left := room - lipgloss.Width(line) - lipgloss.Width(joint)
+		if left < 1 {
+			left = 1
+		}
+		lines := strings.Split(name, "\n")
+		for n, l := range lines {
+			lines[n] = pickerClip(l, left)
+		}
+		line += joint + strings.Join(lines, "\n")
+	}
+	line = proseClipEachLine(strings.TrimRight(line, " "), room)
+	if i == s.cursor {
+		return StyleSidebarItemActive.Render(line)
+	}
+	return line
+}
+
+// widestFacts is the widest run of facts any slot on the list carries — the
+// width the occupancy column is sized around.
+func (s *StorageSlotsScreen) widestFacts() int {
+	widest := 0
+	for _, slot := range s.rows {
+		if w := lipgloss.Width(slotFactsText(slot)); w > widest {
+			widest = w
+		}
+	}
+	return widest
 }
 
 // slotOccupancyText is the one-line answer to "can I put something here?" —
@@ -684,6 +933,15 @@ func slotOccupancyText(slot omsapi.StorageSlot) string {
 // permanent marker id (blank means the tag family ran dry — the slot works by
 // code but has nothing to scan) and whether reaching it needs a pallet jack.
 func slotFlagsText(slot omsapi.StorageSlot) string {
+	if slot.OwningGroupName == "" {
+		return slotFactsText(slot)
+	}
+	return slotFactsText(slot) + " · " + slot.OwningGroupName
+}
+
+// slotFactsText is slotFlagsText without the owning group's name: the fixed
+// facts a row never gives up, as opposed to the identifier it clips.
+func slotFactsText(slot omsapi.StorageSlot) string {
 	var parts []string
 	if slot.AprilTagID != nil {
 		parts = append(parts, fmt.Sprintf("tag %d", *slot.AprilTagID))
@@ -696,12 +954,18 @@ func slotFlagsText(slot omsapi.StorageSlot) string {
 	if !slot.IsActive {
 		parts = append(parts, "retired")
 	}
-	if slot.OwningGroupName != "" {
-		parts = append(parts, slot.OwningGroupName)
-	}
 	return strings.Join(parts, " · ")
 }
 
+// deleteConfirmText is the delete confirm, drawn as the foot under the rows.
+//
+// FOLDED TO THE PANE, because every sentence on it was past the 51 cells an
+// 80-column pane gives and clampToBox took the tails — the tail of the refusal
+// warning being "the backend will refuse". That clause LEADS its sentence now,
+// so a fold cannot split it from the line that opens it. The OMS values it carries are
+// flattened and the occupant's name is clipped before it is folded, so the
+// confirm is a bounded number of rows whatever the record holds, and the keys on
+// its last row stay on the pane.
 func (s *StorageSlotsScreen) deleteConfirmText() string {
 	row, ok := s.selectedRow()
 	if !ok {
@@ -710,16 +974,21 @@ func (s *StorageSlotsScreen) deleteConfirmText() string {
 	if s.deleting {
 		return StyleMuted.Render("Deleting…")
 	}
-	warn := "Delete slot " + row.Code + "? This RELEASES its AprilTag permanently."
-	body := StyleStatusWarn.Render(warn) + "\n"
+	cells := s.paneCells()
+	fold := func(style lipgloss.Style, text string) string {
+		return style.Render(strings.Join(pickerWrap(jdeStatusOneLine(text), cells), "\n")) + "\n"
+	}
+	code := pickerClip(jdeStatusOneLine(row.Code), cells/2)
+	body := fold(StyleStatusWarn, "Delete slot "+code+"? This RELEASES its AprilTag permanently.")
 	if row.CurrentStint != nil {
-		body += StyleMuted.Render("A live stint ("+row.CurrentStint.StintID+") is in this slot — the backend will refuse.") + "\n"
+		stint := pickerClip(jdeStatusOneLine(row.CurrentStint.StintID), cells/2)
+		body += fold(StyleMuted, "The backend will refuse: a live stint ("+stint+") is in this slot.")
 	}
 	if a := row.CurrentAssignment; a != nil {
-		body += StyleMuted.Render(storageTypeName(a.TypeLetter)+" storage ("+
-			firstNonEmpty(a.OccupantDisplay, "unnamed")+") holds this slot — the backend will refuse.") + "\n"
+		who := pickerClip(jdeStatusOneLine(firstNonEmpty(a.OccupantDisplay, "unnamed")), cells/2)
+		body += fold(StyleMuted, "The backend will refuse: "+storageTypeName(a.TypeLetter)+" storage ("+who+") holds this slot.")
 	}
-	body += StyleMuted.Render("Retiring it instead (E → Active off) keeps the tag and the history.") + "\n"
+	body += fold(StyleMuted, "Retiring it instead (E → Active off) keeps the tag and the history.")
 	body += StyleMuted.Render("y delete · n/esc cancel")
 	return body
 }

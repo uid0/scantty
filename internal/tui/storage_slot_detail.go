@@ -406,7 +406,7 @@ func (s *StorageSlotDetailScreen) View() string {
 	case s.confirmingRelease:
 		return s.scroller.View() + "\n\n" + s.releaseConfirmText()
 	case s.card.active:
-		return s.scroller.View() + "\n\n" + s.card.view()
+		return s.scroller.View() + "\n\n" + s.card.view(proseBarCells(s.terminalWidth))
 	case s.previewing:
 		return s.scroller.View() + "\n\n" + s.previewPanel()
 	}

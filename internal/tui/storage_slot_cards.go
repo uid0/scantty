@@ -21,6 +21,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -143,16 +144,27 @@ func (p *slotCardPrompt) syncFocus() {
 	p.path.Blur()
 }
 
-func (p *slotCardPrompt) view() string {
+// view draws the prompt at a pane `cells` wide.
+//
+// BOUNDED TO THE PANE, because the host budgets its body around what this draws
+// (StorageSlotsScreen.foot): the summary is clipped with the cut marked, the path
+// box is sized so the caret stays on the pane however long the path is typed,
+// and the two help lines fold rather than running past the edge — the Avery line
+// is 68 cells against the 51 an 80-column pane gives. The prompt's KEYS are
+// untouched: it is a recorded exception to the prose-bar conversion
+// (proseBarUnconverted), and its own words still name them.
+func (p *slotCardPrompt) view(cells int) string {
+	const title, label = "Print slot cards", "Save PDF to: "
 	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Print slot cards") + "  " + StyleMuted.Render(p.summary) + "\n")
+	summary := pickerClip(jdeStatusOneLine(p.summary), cells-lipgloss.Width(title)-2)
+	b.WriteString(StyleTitle.Render(title) + "  " + StyleMuted.Render(summary) + "\n")
 	caret := func(i int) string {
 		if i == p.cursor {
 			return "▸ "
 		}
 		return "  "
 	}
-	b.WriteString(caret(0) + StyleMuted.Render("Save PDF to: ") + p.path.View() + "\n")
+	b.WriteString(caret(0) + StyleMuted.Render(label) + woBoxView(p.path, cells, strings.Repeat(" ", 2+lipgloss.Width(label))) + "\n")
 	if p.hasToggle() {
 		b.WriteString(caret(1) + StyleMuted.Render("Include retired slots: ") + elecToggleLabel(p.includeInactive) + "\n")
 	}
@@ -164,8 +176,8 @@ func (p *slotCardPrompt) view() string {
 	if p.hasToggle() {
 		help = "tab move · space toggle · " + help
 	}
-	b.WriteString(StyleMuted.Render(help) + "\n")
-	b.WriteString(StyleMuted.Render("3 cards per Avery 5388 sheet · print the saved file (e.g. lp <path>)"))
+	b.WriteString(pickerHintAt(help, cells) + "\n")
+	b.WriteString(pickerHintAt("3 cards per Avery 5388 sheet · print the saved file (e.g. lp <path>)", cells))
 	return b.String()
 }
 
