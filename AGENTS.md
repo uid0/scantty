@@ -755,7 +755,7 @@ note, and is the authority):
   includes every ACTION and SUB-RESOURCE on the viewset. Every detail route a
   kit can legitimately reach sends it (`omsapi.includeKitsQuery` /
   `includeKitsValues`: `GetItem`, `GetItemMetrics`, `GetPurchaseHistory`,
-  `SetItemRetired`, `DeleteInventoryItem`, `SetItemCountMode` — which the kit
+  `GetItemStockHistory`, `SetItemRetired`, `DeleteInventoryItem`, `SetItemCountMode` — which the kit
   save fires AFTER the `/kits/` PATCH). The deliberate exceptions: cycle-count,
   log-usage and pack-container, because a kit carries no stock (and a pack is a
   way of counting stock) and the backend writes stock without `full_clean()`, so

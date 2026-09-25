@@ -301,6 +301,10 @@ func TestItemDetailRoutesAskForKitsToBeIncluded(t *testing.T) {
 			_, err := c.GetPurchaseHistory(context.Background(), "kit-1")
 			return err
 		}},
+		{"stock history", "/api/inventory/items/kit-1/stock_history/", func(c *Client) error {
+			_, err := c.GetItemStockHistory(context.Background(), "kit-1")
+			return err
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

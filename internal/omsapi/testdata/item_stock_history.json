@@ -1,0 +1,1 @@
+{"series":[{"date":"2026-08-17","count":520},{"date":"2026-08-24","count":470},{"date":"2026-08-31","count":455},{"date":"2026-09-07","count":410}],"reorder_events":[{"date":"2026-09-14"}],"cycle_counts":[{"date":"2026-09-14","count":393}],"thresholds":{"reorder_point":100,"desired":400},"current_stock":360}

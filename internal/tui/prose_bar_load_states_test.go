@@ -121,6 +121,9 @@ type proseLoadScreen struct {
 	// where that boundary is, rather than the shared frames' arithmetic. A screen
 	// recording it must answer frameFits, and one answering it must record why.
 	ownFloor string
+	// restamp adapts cached load replies when a screen identifies response
+	// batches and the fixture replays a first-load reply onto a reload.
+	restamp func(proseBarScreen, []tea.Msg) []tea.Msg
 }
 
 // proseLoadReportFloor is the report table's reason, said once for both reports.
@@ -201,6 +204,23 @@ func proseLoadScreens() []proseLoadScreen {
 			}},
 		{name: "item detail", recv: "InventoryDetailScreen", loaded: "item detail/serialized, open-closed, retired", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewInventoryDetailScreen(d, "itm-1") }},
+		{name: "item history", recv: "ItemHistoryScreen", loaded: "item history/stock", reload: "r",
+			fresh: func(d Deps) proseBarScreen { return NewItemHistoryScreen(d, proseBarHistoryItem()) },
+			restamp: func(s proseBarScreen, msgs []tea.Msg) []tea.Msg {
+				loadID := s.(*ItemHistoryScreen).loadID
+				out := append([]tea.Msg(nil), msgs...)
+				for i, msg := range out {
+					switch m := msg.(type) {
+					case itemHistoryStockMsg:
+						m.loadID = loadID
+						out[i] = m
+					case itemHistoryUsageMsg:
+						m.loadID = loadID
+						out[i] = m
+					}
+				}
+				return out
+			}},
 		{name: "item suppliers", recv: "ItemSuppliersScreen", loaded: "item suppliers", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewItemSuppliersScreen(d, "itm-1", "Hex bolt M8x40") }},
 		{name: "location check-ins", recv: "LocationCheckinsScreen", loaded: "location check-ins", reload: "r",
@@ -428,6 +448,14 @@ func proseLoadDeliver(s proseBarScreen, msgs []tea.Msg) proseBarScreen {
 	return s
 }
 
+func proseLoadRepliesFor(ls proseLoadScreen, s proseBarScreen, status int) []tea.Msg {
+	msgs := proseLoadFailure(ls, status)
+	if ls.restamp != nil {
+		msgs = ls.restamp(s, msgs)
+	}
+	return msgs
+}
+
 // proseBarLoadStateFixtures builds every screen in proseLoadScreens in each of
 // its load states, the refresh ones from the loaded fixture named in `drawn`.
 func proseBarLoadStateFixtures(drawn []proseBarFixture) []proseBarFixture {
@@ -453,11 +481,13 @@ func proseBarLoadStateFixtures(drawn []proseBarFixture) []proseBarFixture {
 		}
 		add(proseLoadInFlight, func() proseBarScreen { return ls.fresh(proseLoadDeps(http.StatusBadGateway)) })
 		add(proseLoadFailed, func() proseBarScreen {
-			return proseLoadDeliver(ls.fresh(proseLoadDeps(http.StatusBadGateway)), proseLoadFailure(ls, http.StatusBadGateway))
+			s := ls.fresh(proseLoadDeps(http.StatusBadGateway))
+			return proseLoadDeliver(s, proseLoadRepliesFor(ls, s, http.StatusBadGateway))
 		})
 		if ls.refused {
 			add(proseLoadRefused, func() proseBarScreen {
-				return proseLoadDeliver(ls.fresh(proseLoadDeps(http.StatusForbidden)), proseLoadFailure(ls, http.StatusForbidden))
+				s := ls.fresh(proseLoadDeps(http.StatusForbidden))
+				return proseLoadDeliver(s, proseLoadRepliesFor(ls, s, http.StatusForbidden))
 			})
 		}
 		if ls.reload == "" {
@@ -476,7 +506,8 @@ func proseBarLoadStateFixtures(drawn []proseBarFixture) []proseBarFixture {
 		}
 		add(proseReloadInFlight, reloading)
 		add(proseReloadFailed, func() proseBarScreen {
-			return proseLoadDeliver(reloading(), proseLoadFailure(ls, http.StatusBadGateway))
+			s := reloading()
+			return proseLoadDeliver(s, proseLoadRepliesFor(ls, s, http.StatusBadGateway))
 		})
 	}
 	return out

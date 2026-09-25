@@ -625,6 +625,9 @@ func proseBarFixtures() []proseBarFixture {
 	// are several lines and whose pager is a page of them — see
 	// proseBarAssetPartsFixtures.
 	out = append(out, proseBarAssetPartsFixtures()...)
+	// The item's stock history and usage logs, written on the record rather than
+	// converted to it — see proseBarItemHistoryFixtures.
+	out = append(out, proseBarItemHistoryFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are
@@ -770,10 +773,18 @@ func proseBarPanelTopology() *omsapi.PowerPanelTopology {
 // proseBarLongNote is a body-lengthening note. It is prose rather than repeated
 // filler because these bodies are also FOLDED, and a body of one repeated word
 // folds differently from one an operator would actually read.
+//
+// NO TWO OF ITS LINES ARE ALIKE, and that is load-bearing: a scroll of one row
+// through a run of identical lines draws the same pane before and after, so
+// TestProseBar_EveryMovementKeyIsNamedWhereItMoves would call a working `k` dead.
+// It did, on the item sheet, once a longer bar left the window inside the run.
 func proseBarLongNote() string {
-	return strings.TrimSpace(strings.Repeat(
-		"Stored against the north wall behind the surface grinder; the rack is "+
-			"bolted to the slab and the top level needs a pallet jack.\n", 12))
+	var b strings.Builder
+	for bay := 1; bay <= 12; bay++ {
+		fmt.Fprintf(&b, "Bay %d: stored against the north wall behind the surface grinder; the "+
+			"rack is bolted to the slab and the top level needs a pallet jack.\n", bay)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // ---------------------------------------------------------------------------
