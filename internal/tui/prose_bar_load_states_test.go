@@ -245,6 +245,10 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen { return NewPanelBreakersScreen(d, 1, "Main distribution panel MDP-1") }},
 		{name: "pm board", recv: "PMBoardScreen", loaded: "pm board", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewPMBoardScreen(d) }},
+		{name: "pm due", recv: "PMDueScreen", loaded: "pm due", reload: "r",
+			fresh: func(d Deps) proseBarScreen { return NewPMDueScreen(d) }},
+		{name: "maintenance rollup", recv: "MaintenanceRollupScreen", loaded: "maintenance rollup", reload: "r",
+			fresh: func(d Deps) proseBarScreen { return NewMaintenanceRollupScreen(d) }},
 		{name: "project storage detail", recv: "ProjectStorageDetailScreen", loaded: "project storage detail", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewProjectStorageDetailScreen(d, "PS-AB23CDFG") }},
 		// THE REPORT TABLE ON TWO REPORTS, because one type rides every tabbed

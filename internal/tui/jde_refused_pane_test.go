@@ -306,6 +306,10 @@ var jdeInertCases = map[string]string{
 	"AssetMetersScreen/no meters":          "an empty meter grid: no rows, so no cursor to move",
 	"AssetDocumentsScreen/no documents":    "an empty document library: no rows, so no cursor to move",
 	"AssetMeterReadingsScreen/no readings": "an empty ledger: no rows, so no cursor to move",
+	"AssetMaintenanceHistoryScreen/empty range": "a history range with nothing in it: no rows, so no " +
+		"cursor to move",
+	"AssetMaintenanceHistoryScreen/edit notes": "the notes edit is ONE typed box: no cursor to walk " +
+		"and nothing a paging pair could reach, so its bar names no movement key",
 
 	// The interlock's LOCK REASON form is one typed box and nothing else: no
 	// cursor to walk and, at one field, nothing a paging pair could reach — so its

@@ -635,3 +635,60 @@ What they pin that a hand-written map does not:
   a string.
 * **The start's refusals are `{"detail": "<prose>"}` with no `code`**, which
   `parseError` cannot read and `AsDetailRefusal` recovers.
+
+## Maintenance rollup: due lists, bulk generation, dashboard, history, records
+
+| file | request | status | OMS builder |
+|---|---|---|---|
+| `maintenance_due_week.json` | `GET /api/inventory/maintenance-items/due_this_week/` | 200 | `MaintenanceItemViewSet.due_this_week` → `MaintenanceItemSerializer` |
+| `maintenance_due_month.json` | `GET …/maintenance-items/due_this_month/` | 200 | `MaintenanceItemViewSet.due_this_month` |
+| `maintenance_generate_bulk.json` | `POST …/maintenance-items/generate_work_orders_bulk/` `{}` as a plain member | 201 | `MaintenanceItemViewSet.generate_work_orders_bulk` (hand-built) |
+| `maintenance_generate_bulk_none.json` | the same POST again, immediately | 201 | same |
+| `maintenance_generate_bulk_anonymous.json` | the same POST with no `Authorization` | 401 | DRF via `config.api_errors` |
+| `maintenance_dashboard.json` | `GET /api/inventory/maintenance/dashboard/` | 200 | `MaintenanceDashboardViewSet.dashboard` (hand-built) |
+| `maintenance_active.json` | `GET /api/inventory/maintenance/active/` | 200 | `MaintenanceDashboardViewSet.active_work_orders` (hand-built) |
+| `maintenance_history.json` | `GET /api/inventory/assets/{saw}/maintenance-history/` | 200 | `AssetViewSet.maintenance_history` (hand-built) |
+| `maintenance_history_empty.json` | the same for an asset with no history | 200 | same |
+| `maintenance_history_bad_since.json` | the same with `?since=2025-13-01` | 400 | same — a raw `{"detail": …}` from the view body |
+| `maintenance_record_create.json` | `POST /api/inventory/maintenance-records/` backdated to 2023-06-02, vendor set | 201 | `MaintenanceRecordSerializer` |
+| `maintenance_record_create_refused.json` | the same with `vendor` and `performed_by_internal` both null | 400 | `MaintenanceRecordSerializer.validate` via `config.api_errors` |
+| `maintenance_record_create_future.json` | the same with `completed_on` 2030-01-01 | 400 | same |
+| `maintenance_record_create_forbidden.json` | a valid create as a plain member | 403 | `IsAuthenticatedOrStaffSigAdminWrite` |
+| `maintenance_record_patch_notes.json` | `PATCH …/maintenance-records/{id}/` `{"notes": …}` | 200 | `MaintenanceRecordSerializer` |
+
+Recorded 2026-09-14 against OpenMakerSuite `main` at `2a52266` (tree
+`cd3fd209`), a clean clone matching remote `main`, on PostgreSQL, as a staff
+superuser except where a row says otherwise. The plain member cannot pass
+`/api/auth/login/` without an active membership, so its token was minted with
+`RefreshToken.for_user` in `manage.py shell` — the token is ordinary; only the
+login gate was stepped round.
+
+Seeded in `manage.py shell` so every section the web draws has a row: on one
+asset, an item completed 97 days ago on a 90-day interval (dated OVERDUE), one
+due in two days that already had an OPEN work order, and one due in three days;
+on a second, an item never completed (`next_due_at` null, `is_overdue` true),
+one due in twenty days (month only) and one due in a year (neither list). A
+blocked work order with no template, an unpromoted asset problem and a
+location problem fill `active`; a completed work order off the overdue item's
+template fills the dashboard's costs. The history carries a vendor record, an
+internal-staff record with no cost, and a CLOSED third-party work order. The
+bulk run was recorded AFTER the due lists, the dashboard and `active`, which is
+why those still show the pre-generation state.
+
+What they pin:
+
+* the due lists are **bare arrays**, include never-completed and overdue items,
+  and the month list is a strict superset of the week's;
+* the bulk run created **3 of the 4** items due — the one with an open work order
+  was skipped and the reply does not say so — and a repeat answers **201**
+  `{"created": 0, "work_order_ids": []}`;
+* `maintenance/active/`'s `location_id` is a JSON **number** and every other id a
+  string; `asset_name` is `null` on a location problem;
+* the dashboard's money is **strings**, and its timestamps are `…+00:00` where
+  the due lists' are `…Z`;
+* the history's `total_cost` is `"0"` — not `"0.00"` — with no costed row, its
+  internal user's `id` is a **number**, and its date refusal carries the
+  ValidationError's list brackets in the sentence;
+* a record's two validation rules come back one at a time in the standard
+  envelope (the vendor rule wins when both would fail), and a member's write is
+  the coded 403.

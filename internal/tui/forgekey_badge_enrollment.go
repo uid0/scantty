@@ -159,7 +159,7 @@ func (s *BadgeEnrollmentScreen) loadUsers() tea.Cmd {
 	deps := s.deps
 	ctx := s.ctx()
 	return func() tea.Msg {
-		users, err := deps.OMS.ListAllUsers(ctx)
+		users, err := deps.OMS.ListAllUsers(ctx, nil)
 		return badgeUsersLoadedMsg{users: users, err: err}
 	}
 }

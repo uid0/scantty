@@ -215,21 +215,21 @@ func (c *Client) RemoveSIGMember(ctx context.Context, sigID, userID int) error {
 // fallback (/api/membership/users/ → /api/users/) for older backends. The
 // directory is staff-gated (IsAdminUser); a non-staff caller gets a 403 the
 // caller surfaces.
-func (c *Client) ListAllUsers(ctx context.Context) ([]User, error) {
-	all, err := c.iterAllUsersAt(ctx, "/api/membership/users/")
+func (c *Client) ListAllUsers(ctx context.Context, q url.Values) ([]User, error) {
+	all, err := c.iterAllUsersAt(ctx, "/api/membership/users/", q)
 	if err == nil {
 		return all, nil
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.IsNotFound() {
-		return c.iterAllUsersAt(ctx, "/api/users/")
+		return c.iterAllUsersAt(ctx, "/api/users/", q)
 	}
 	return nil, err
 }
 
-func (c *Client) iterAllUsersAt(ctx context.Context, path string) ([]User, error) {
+func (c *Client) iterAllUsersAt(ctx context.Context, path string, q url.Values) ([]User, error) {
 	var all []User
-	if err := IterPages[User](ctx, c, path, nil, func(batch []User) error {
+	if err := IterPages[User](ctx, c, path, q, func(batch []User) error {
 		all = append(all, batch...)
 		return nil
 	}); err != nil {

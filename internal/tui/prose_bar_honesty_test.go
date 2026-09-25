@@ -637,6 +637,9 @@ func proseBarFixtures() []proseBarFixture {
 	// The per-record checklist list — a flat list with a start that can be in
 	// flight or refused — see proseBarRecordChecklistFixtures.
 	out = append(out, proseBarRecordChecklistFixtures()...)
+	// The maintenance rollup surfaces: the PM due list and the rollup sheet —
+	// see proseBarMaintenanceRollupFixtures.
+	out = append(out, proseBarMaintenanceRollupFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are
