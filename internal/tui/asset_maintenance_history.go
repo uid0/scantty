@@ -993,8 +993,7 @@ func (s *AssetMaintenanceHistoryScreen) createHeader() jdeHeader {
 			Label: "Asset", Kind: jdeValue,
 			Value: fitCellIf(s.assetName, jdeStripWidth(w, assetLabelW)),
 		}, assetLabelW, w))
-	h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(histRecordCaveat, w),
-		func(rows int) []string { return jdeCaveatLinesIn(histRecordCaveat, w, rows) })
+	h = h.addCaveat(jdeHeadContext, jdeCaveatLines(histRecordCaveat, w))
 	if s.vendorsErr != "" && !s.internal {
 		h = h.add(jdeHeadContext, StyleStatusError.Render("Vendors: ")+fitCellIf(s.vendorsErr, w-len("Vendors: ")))
 	}
