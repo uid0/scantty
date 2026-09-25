@@ -22,7 +22,7 @@ import (
 // longer than the pane took the footer off the bottom whatever it said. Their
 // rows are also not one line each (a meta line, a notes line, a contact line,
 // present or absent per row), which is why a row-counting window would have been
-// the AssetPartsScreen defect under a new name. proseNavStep and
+// the defect the parts list on an asset was recorded for, under a new name. proseNavStep and
 // proseFlatListFrame (prose_bar.go) are the shared answer.
 //
 // A FLAT LIST NOT HERE is named in proseBarUnconverted with what stopped it: a

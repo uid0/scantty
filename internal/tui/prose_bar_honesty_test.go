@@ -191,12 +191,18 @@ var proseBarUnconverted = map[string]string{
 	// whose cursor moves in two dimensions, so each direction is gated on its own
 	// rather than as a pair, and whose header, cursor line and legend had to fold
 	// or clip before the window could be budgeted from them —
-	// prose_bar_storage_overview_test.go carries it.
+	// prose_bar_storage_overview_test.go carries it. And the windowed recipe's
+	// one screen whose rows are SEVERAL LINES BY CONSTRUCTION went on its own —
+	// the parts list on an asset, where packing the window by lines turned the
+	// row-counted pager into a question of what a page is, answered by
+	// proseLinePage: prose_bar_asset_parts_test.go carries it.
 	// What remains divides:
 	//
-	//   - STILL ON THAT RECIPE, but not mechanically. It has a window and a
-	//     budget, and something about it that the shared helpers do not answer —
-	//     rows that are not one line. The entry says why that is a decision.
+	//   - STILL ON THAT RECIPE, but not mechanically. The last two had a window
+	//     and a budget, and something about them that the shared helpers do not
+	//     answer — rows that are not one line, and a chrome constant counting
+	//     something else — and both are converted now (see above), so none is
+	//     left here.
 	//   - FLAT, with no window at all: they draw EVERY row and then the footer, so
 	//     a list longer than the pane pushes the bar off the bottom whatever it
 	//     says, and folding alone would not put it back. The ones that were
@@ -207,18 +213,6 @@ var proseBarUnconverted = map[string]string{
 	//     are converted now (see above), so none is left here.
 
 	// Still on the windowed recipe.
-	"AssetPartsScreen": "the parts list on an asset. It is on the windowed-cursor-list " +
-		"recipe the tranche above converted and it is NOT a mechanical case: its renderRow " +
-		"draws SEVERAL lines per part (the SKU and quantity row, the replacement history, " +
-		"the notes), so a budget counting ROWS is not a budget at all — at 80x40 the frame " +
-		"already runs past the pane with the cursor at the top, and a cursor moving inside " +
-		"the window changes nothing an operator can see, because what they are looking at " +
-		"is the part of the frame clampToBox left. The line-packing arithmetic now exists " +
-		"(proseLineWindow, which the flat lists use), so what is left is not the packing: it " +
-		"binds pgup/pgdn as `cursor += windowSize`, a page counted in ROWS, and once the " +
-		"window is packed by lines a row count stops being a page — so converting it is " +
-		"deciding what a page of multi-line parts is worth, which is a decision about what " +
-		"this list does rather than about what its bar says",
 
 	// Flat: no window at all, so the bar and the body budget are one piece of work.
 
@@ -627,6 +621,10 @@ func proseBarFixtures() []proseBarFixture {
 	// The storage overview, a rack grid gated per direction — see
 	// proseBarStorageOverviewFixtures.
 	out = append(out, proseBarStorageOverviewFixtures()...)
+	// The parts list on an asset, the windowed recipe's last screen, whose parts
+	// are several lines and whose pager is a page of them — see
+	// proseBarAssetPartsFixtures.
+	out = append(out, proseBarAssetPartsFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are

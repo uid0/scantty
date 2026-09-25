@@ -574,8 +574,8 @@ const proseFlatCeilingRows = 2
 //
 // THE WINDOW IS PACKED BY LINES, NOT ROWS, because their rows are not one line
 // each: a donation carries a meta line, a vendor a contact line and a compliance
-// line, each present or absent per row. A budget counting rows is the defect
-// AssetPartsScreen is recorded for. So each row arrives RENDERED, its height is
+// line, each present or absent per row. A budget counting rows is not a budget
+// once rows vary in height. So each row arrives RENDERED, its height is
 // what it will really draw, and proseLineWindow packs them — ListScreen's
 // rowsFittingFrom arithmetic, on the screens that never had it.
 //
@@ -703,10 +703,12 @@ func proseRowHeights(rows []string) []int {
 //
 // WHAT THIS DOES NOT CHANGE is the pager: pgup/pgdn still step the cursor by the
 // budget in ROWS. On a list of multi-line names that is a step longer than the
-// screenful drawn, so a page can pass rows j/k still reach; deciding what a page
-// of rows of different heights is worth is the question AssetPartsScreen's
-// proseBarUnconverted entry already records, and it is not part of keeping the
-// footer on the pane.
+// screenful drawn, so a page can pass rows j/k still reach. What a page of rows
+// of different heights is worth was decided for the one list whose rows are
+// multi-line by construction — proseLinePage, which AssetPartsScreen pages with —
+// and these lists were left on the row step, because a stored newline in a name
+// is the exception there and changing what their pager does is not part of
+// keeping the footer on the pane.
 func proseCursorWindow(b *strings.Builder, rows []string, cursor int, start *int, budget int) {
 	if extraHeadLines := strings.Count(b.String(), "\n") - 1; extraHeadLines > 0 {
 		budget -= extraHeadLines
@@ -799,6 +801,56 @@ func proseLineWindow(heights []int, cursor, start, budget int) (from, to int) {
 		start = prev
 	}
 	return start, start + fits(start)
+}
+
+// proseLinePage is where pgdn and pgup put the cursor on a list whose window is
+// packed by LINES, and where that window then starts: `down` lands on the first
+// row BELOW the window proseLineWindow draws, and the window starts there; up
+// lands on the first row ABOVE it, and the window ends there. At either end of
+// the list the cursor clamps to the end row instead.
+//
+// A PAGE IS WHAT THE PACKED WINDOW SHOWS, and that is a decision about what the
+// key does rather than about its words. The windowed lists page as
+// `cursor += windowSize`, a count of ROWS, which is a screenful exactly while
+// every row is one line. AssetPartsScreen draws a part as two, three or more
+// lines, so a step of the budget in rows passed parts the operator had never
+// seen and put the cursor off the pane: measured at 80x24 before this, one pgdn
+// moved the cursor from the first part to the fifteenth over a window holding
+// six. Landing on the first row the window did not hold means one pgdn is one
+// screenful of whatever heights the rows have, and no row is skipped.
+//
+// "Not held" means not held WHOLE: proseLineWindow returns only the rows that
+// fit, so a row the pane would only have half drawn is the row a page lands on.
+// A row taller than the whole budget is still a window of one, clipped by the
+// frame, and the page after it is the row after it.
+//
+// A budget of zero or less is the unsized pane, where the frame draws every row:
+// the window is the whole list, so a page is the end row it is pressed towards.
+func proseLinePage(heights []int, cursor, start, budget int, down bool) (newCursor, newStart int) {
+	n := len(heights)
+	if n == 0 {
+		return 0, 0
+	}
+	from, to := 0, n
+	if budget > 0 {
+		from, to = proseLineWindow(heights, cursor, start, budget)
+	}
+	if down {
+		if to >= n {
+			return n - 1, from
+		}
+		return to, to
+	}
+	if from == 0 {
+		return 0, 0
+	}
+	newCursor = from - 1
+	newStart = newCursor
+	for used := heights[newStart]; newStart > 0 && used+heights[newStart-1] <= budget; {
+		newStart--
+		used += heights[newStart]
+	}
+	return newCursor, newStart
 }
 
 // proseBarFieldFocus is the focus pair of a FIELD FORM whose focus WRAPS: tab and
