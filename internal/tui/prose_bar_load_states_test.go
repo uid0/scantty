@@ -102,6 +102,19 @@ type proseLoadScreen struct {
 	// out of the give-order claim the load-frame bar sweep makes — and only
 	// that one; every other sweep still presses it.
 	failureIsAForm string
+	// loadCmd, where set, is the command carrying the load of a screen fresh
+	// builds with its load already out — for a screen whose load is not started
+	// by Init. The search palette's is a typed query's search, sent when the
+	// debounce fires; Init only blinks the caret, so running it would deliver no
+	// failure and the failed states would silently be something else.
+	loadCmd func(proseBarScreen) tea.Cmd
+	// typing is proseBarFixture.typing for every load state of this screen: a
+	// focused box drawn on the load frame itself.
+	typing string
+	// rowsStay says why a REFRESH on this screen keeps its rows DRAWN, where
+	// every other screen's load frame draws none — so its refresh-in-flight
+	// state is swept as a list that moves rather than recorded immobile.
+	rowsStay string
 }
 
 func proseLoadScreens() []proseLoadScreen {
@@ -190,6 +203,22 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen { return NewProjectStorageDetailScreen(d, "PS-AB23CDFG") }},
 		{name: "reorder queue", recv: "ReorderQueueScreen", loaded: "reorder queue/pending", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewReorderQueueScreen(d) }},
+		// THE PALETTE HAS NO REFRESH KEY, because editing the query IS the refresh:
+		// every edit schedules a search over the results still drawn. So its reload
+		// is BACKSPACE on a loaded query one character longer than the one its load
+		// starts from, which lands the refresh on exactly the query the failing
+		// backend was asked — a failure for any other query is dropped as stale,
+		// and the fixture would be left in a state it is not named for.
+		{name: "search palette", recv: "SearchPalette", loaded: "search palette/results", reload: "backspace",
+			typing: proseBarFormBox,
+			rowsStay: "a refined query is searched OVER the results it is narrowing, which stay " +
+				"on the pane with the cursor on them, so the arrows visibly move it while the " +
+				"search is out",
+			fresh: func(d Deps) proseBarScreen { return proseBarPaletteTyped(d, proseBarPaletteLoadQuery) },
+			loadCmd: func(s proseBarScreen) tea.Cmd {
+				_, cmd := s.Update(searchTickMsg{query: proseBarPaletteLoadQuery})
+				return cmd
+			}},
 		{name: "serialized components", recv: "SerializedComponentsScreen", loaded: "serialized components/list", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewItemInstancesScreen(d, "item-1", "Safety relay", nil) }},
 		{name: "serialized forecast", recv: "SerializedForecastScreen", loaded: "serialized forecast", reload: "r",
@@ -287,7 +316,12 @@ func proseLoadFailure(ls proseLoadScreen, status int) []tea.Msg {
 	if msgs, ok := proseLoadReplies.byKey[key]; ok {
 		return msgs
 	}
-	msgs, _ := proseLoadRun(ls.fresh(proseLoadDeps(status)).Init(), 0)
+	s := ls.fresh(proseLoadDeps(status))
+	cmd := s.Init()
+	if ls.loadCmd != nil {
+		cmd = ls.loadCmd(s)
+	}
+	msgs, _ := proseLoadRun(cmd, 0)
 	proseLoadReplies.byKey[key] = msgs
 	return msgs
 }
@@ -363,9 +397,13 @@ func proseBarLoadStateFixtures(drawn []proseBarFixture) []proseBarFixture {
 	for _, ls := range proseLoadScreens() {
 		ls := ls
 		add := func(state proseLoadState, build func() proseBarScreen) {
+			still := immobile
+			if state == proseReloadInFlight && ls.rowsStay != "" {
+				still = ""
+			}
 			out = append(out, proseBarFixture{
 				name: ls.name + "/" + string(state), recv: ls.recv, load: state,
-				build: build, immobile: immobile,
+				build: build, immobile: still, typing: ls.typing,
 			})
 		}
 		add(proseLoadInFlight, func() proseBarScreen { return ls.fresh(proseLoadDeps(http.StatusBadGateway)) })
@@ -555,8 +593,14 @@ func TestProseBar_ALoadInFlightOrFailedNamesExactlyTheKeysThatWork(t *testing.T)
 		t.Run(f.name, func(t *testing.T) {
 			bar := proseBarAt(f, w, h)
 			for _, key := range proseBarKeySpace() {
-				changed, acted, toasted := proseLoadKeyEffect(f, w, h, key)
 				named := bar.names(key)
+				if !named && proseBarBoxTakes(f, key) {
+					// The box's key, not the bar's: a box drawn ON the load frame
+					// takes what is typed, and the loaded biconditional already
+					// requires every such character to visibly land in it.
+					continue
+				}
+				changed, acted, toasted := proseLoadKeyEffect(f, w, h, key)
 				switch {
 				case named && !changed && !acted && !toasted:
 					if proseBarLeaves(t, f, key) {
@@ -603,7 +647,9 @@ func TestProseBar_UnnamedLoadKeysDoNotEnterHiddenStates(t *testing.T) {
 			continue
 		}
 		for _, key := range proseBarKeySpace() {
-			if proseBarAt(f, w, h).names(key) {
+			if proseBarAt(f, w, h).names(key) || proseBarBoxTakes(f, key) {
+				// Named, or typed into a box the load frame draws — a query edited
+				// in plain sight is not a hidden state.
 				continue
 			}
 			want := reveal(proseBarSize(f.build(), w, h))

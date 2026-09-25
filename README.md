@@ -246,7 +246,6 @@ Not yet landed (the long tail):
 - ForgeKey device detail + command actions (enable/disable/identify/blink/firmware).
 - Authorization create/revoke + classroom-mode QR enroll.
 - ForgeKey occupancy sparkline.
-- Global search palette (Cmd-K equivalent).
 - Badge-scan path — needs an OMS member-by-badge endpoint or a documented convention for resolving badge → user.
 - Raw-HID and serial scanner sources (only stdin/keyboard-emulation today).
 
