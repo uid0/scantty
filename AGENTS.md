@@ -1441,63 +1441,13 @@ either:
   by a height set that avoids the state, and it fails if either side of that
   boundary was never reached, because a scoping that avoids the state is a way
   of asserting nothing. A claim of ABSENCE needs no boundary at any height.
-- **A REPORT TABLE fits its pane, and the give-order is written down.**
-  `internal/tui/report_table.go` (`fitReportTable`, `layoutRows`) is the layer
-  behind every tabbed report — inventory, purchasing, assets, reorders
-  analytics, ForgeKey fleet — and it is NOT on the columnar `jde_form.go` layer,
-  which is why its pane accessors are `reportPaneRows` / `reportPaneCells`:
-  `paneRows` is the columnar layer's own and marked `jde:layer-only`, exactly as
-  `ListScreen` names its pair `listPaneRows` / `listPaneCells`.
-  Horizontally, every part of a row is one of two things — an IDENTIFIER (a
-  left-aligned column) that abbreviates down to `reportNameFloor` with an
-  ellipsis, or a FACT (a right-aligned column) that NEVER gives, header
-  included, so no figure is ever cut. Where even that will not fit, whole
-  columns are DROPPED from the right: the header carries `reportDropMark` and
-  the note under the table NAMES them, the mark leading and the names following
-  because a short pane takes the note first.
-  Vertically, `layoutRows` gives ground in a stated order: the yardstick legend
-  and the action bar never give, the body floors at one row, and the block under
-  the table gives from the END. THE ACTION BAR HALF OF THAT HOLDS ON EVERY
-  BRANCH `View` DRAWS, and it is `frameRows` that spends it: only the TABLE
-  branch used to consult a budget at all, so the loading, failed and empty
-  frames were laid out against nothing — the failed one against a flat six-row
-  constant, which at 80 columns needed a sixteen-row terminal where the frame it
-  replaced needed eleven. An operator whose load had just FAILED, on an
-  11-to-15-row terminal, read six lines of gateway HTML with no named way off
-  the screen. Those frames give up their OWN BLOCK now, from the end; on the
-  failed one what a cut leaves is always the first line of the error AND the row
-  saying the rest went (`reportErrMinRows`), because the mark is what tells an
-  operator they are not reading the whole failure.
-  THE MARKER ROW IS RESERVED WHERE THE BLOCK BELOW
-  IS CLAMPED (`rowBudget`), not taken out of the body afterwards: taken after,
-  the body's floor handed back a row already spent and the frame assembled one
-  row more than the pane had whenever the block below squeezed the body to one —
-  at 80x20 on the reorders Supplier perf tab what `clampToBox` then took was the
-  footer's last fold, `r refresh · esc back`, leaving no named way off the
-  screen. Where even the floor will not fit the frame still runs over; that
-  band is `frameFits`'s own answer, asked per branch, and is left as it is
-  rather than half-converted into a refusal, safe because the legend LEADS, so a
-  figure is never drawn without it at any height. Do NOT write the band down as
-  a height:
-  it moves with every wording on the frame and it grows TALLER as the terminal
-  gets NARROWER, because the legend, the notes and the footer then fold onto
-  more rows. `TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas` walks
-  both sides of it on EVERY branch — loading, failed, empty and loaded — at
-  every pane Root draws, and
-  `TestReportTable_TheScreenAssemblesNothingThePaneCannotHold` is its width
-  counterpart; both measure what the screen HANDS OVER, because after
-  `clampToBox` no frame can be too big — the truncation has already happened.
-  What this replaced, measured at 80 columns: a 75% on-time rate drawn as `75`,
-  a 33.3% late rate as `33.`, `$12,345.67` as `$12,3`, every numeric column off
-  the pane under a header line reading `Or`, notes and the action bar cut
-  mid-word, and a tab bar that showed the first three tabs and no highlight at
-  all while the operator stood on the sixth.
-  `internal/tui/report_yardstick_test.go` sweeps every report screen — the
-  roster DERIVED from the package source — at every width and height Root draws.
-  Its fixtures carry a full-length OMS supplier name and a distinct wide figure
-  per column ON PURPOSE: every report fixture in this package used to write
-  `Acme` and `Bolt`, so no test had ever rendered a report row at the length OMS
-  really serves, which is how the whole class survived.
+- **A REPORT TABLE fits its pane and keeps its recorded action bar visible.**
+  `internal/tui/report_table.go` owns the horizontal and vertical give-order,
+  cell normalization, load-state key gating, and the `proseBar` record shared
+  by every tabbed report. Read its doc comments rather than carrying another
+  copy here. `internal/tui/prose_bar_report_table_test.go` checks bar honesty and
+  `internal/tui/report_yardstick_test.go` derives and sweeps the report roster
+  across the panes Root draws, including oversized stored row values.
 - **Every row a columnar sheet draws fits the pane, and a sweep measures it.**
   `TestJDEForm_NoRowRunsPastThePane` (`jde_row_width_test.go`) walks every case
   `jdePaneCases` and `jdeHeaderCases` build, at every honest width and drawable

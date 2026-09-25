@@ -120,7 +120,8 @@ import (
 // sheets, whose modes draw in place of their footer
 // (prose_bar_scroller_sheets_test.go), and then the storage slot list, whose
 // window budget had counted its bar and its print overlay as one constant
-// (prose_bar_storage_slots_test.go). A
+// (prose_bar_storage_slots_test.go), and then the shared report table every
+// tabbed report rides (prose_bar_report_table_test.go). A
 // field-form entry here was an exemption from THIS classifier, never from the
 // bar rule, and a form's record names its focus keys like any other. Their bars
 // are RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
@@ -131,10 +132,6 @@ var listNavUnsweptReceivers = map[string]string{
 	"AssetPartsScreen": "the parts list on an asset; footer written in View, already past " +
 		"51 cells. Left out of the windowed-cursor-list conversion because its rows are " +
 		"multi-LINE and its window is budgeted in rows — see proseBarUnconverted",
-	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
-		"page rides. reportScreenFixtures (report_yardstick_test.go) is the roster of " +
-		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +
-		"package source every run, so no count is restated here to drift",
 	"StorageOverviewScreen": "the storage overview",
 	"TextScroller": "not a list at all: a read-only text body with a scroll offset and " +
 		"no cursor, shared by every detail sheet that holds one (listNavDelegatingReceivers " +

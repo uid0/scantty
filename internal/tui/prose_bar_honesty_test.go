@@ -218,8 +218,15 @@ var proseBarUnconverted = map[string]string{
 	"StorageOverviewScreen": "the storage overview, a rack grid rather than a row list",
 
 	// THE ONES THAT ARE NEITHER A SCROLLED SHEET NOR A PLAIN CURSOR LIST, each
-	// saying what it is instead — a detail sheet with no window, a shared table
-	// with a give-order of its own, or not a screen at all.
+	// saying what it is instead — a detail sheet with no window, or not a screen
+	// at all.
+	//
+	// THE SHARED REPORT TABLE HAS BEEN TAKEN OUT OF THIS GROUP — the one screen
+	// here whose vertical give-order was already written down and enforced
+	// (report_table.go's layoutRows: the legend and the bar never give, the body
+	// floors at one row), so its conversion turned the bar it never gives up into
+	// a record rather than teaching it to budget. It is one type under every
+	// tabbed report, so prose_bar_report_table_test.go sweeps it on more than one.
 	//
 	// THE SIMPLE FIELD FORMS HAVE BEEN TAKEN OUT OF THIS GROUP — the sign-in
 	// form, the reorder form and both steps of the batch scan, whose up/down move
@@ -240,7 +247,6 @@ var proseBarUnconverted = map[string]string{
 		"not bind today (j/k, the arrows, the pager) — a change to what the screen does, " +
 		"which is a decision and not part of making its bar honest",
 	"LocationDetailScreen": "NOT a prose-footer screen in the sense the rest of this map is: it is here because the navigation derivation is a set of KEY NAMES and its `g` GENERATES the location's QR code. A proseBar records which keystrokes a segment spells, which says nothing about whether a keystroke is navigation — so converting it would not make this exception expressible, and it stays an exception. Recorded rather than filtered, since a filter clever enough to drop it would eventually drop a real one",
-	"ReportTableScreen":    "the shared scrollable report table every tabbed report rides. It is the one screen here whose vertical give-order is ALREADY written down and enforced (report_table.go's layoutRows: the legend and the bar never give, the body floors at one row), so converting it is turning the bar it never gives up into a record — not teaching it to budget",
 	"Root":                 "NOT a screen: app.go's root, whose movement keys walk the NAV TREE. The sidebar is its own surface with its own legend and is not a list of rows, so there is no footer here to make a record of",
 	"TextScroller":         "NOT a screen and so has no footer to convert: the shared read-only body the scroller sheets hold. EVERY sheet holding one now declares a record, so each keystroke its Handle binds is pressed through that sheet's bar — the condition this entry used to wait on. It stays because the navigation derivation reads key names off RECEIVERS, and a shared component whose Handle binds the vocabulary is one; a filter clever enough to drop a component would be clever enough to drop a screen, so it is recorded rather than filtered",
 	"slotCardPrompt":       "NOT a list and NOT a prose footer: a two-row modal inside the storage-slot list (and the slot detail) whose up/down move between a text field and a toggle, and whose cursor WRAPS. The field-form exemption, and the second of the two entries a filter would have to be clever enough to drop — so it stays an exception too. Its HOSTS are converted and give it room: StorageSlotsScreen budgets its window around the rows it draws (foot), and both hand it the live pane so it folds rather than running past the edge — but its own words about its keys are still a literal, and a record for them would first need the field-form question answered for a two-row modal",
@@ -610,6 +616,9 @@ func proseBarFixtures() []proseBarFixture {
 	out = append(out, proseBarStorageSlotFixtures()...)
 	// The universal search palette, the tenth — see proseBarSearchPaletteFixtures.
 	out = append(out, proseBarSearchPaletteFixtures()...)
+	// The shared REPORT TABLE, on more than one report, the eleventh — see
+	// proseBarReportTableFixtures.
+	out = append(out, proseBarReportTableFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are

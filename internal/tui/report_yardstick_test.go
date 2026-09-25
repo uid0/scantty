@@ -736,10 +736,10 @@ func TestReportTable_TheFooterReachesThePaneWhole(t *testing.T) {
 		reportSeed(s, 0, reportSweepRows(cols, 12), omsapi.VarianceYardstickQuotedLeadTime)
 		lines := reportRootLines(t, s, w, 40)
 		flat := reportFlatPane(lines)
-		for _, seg := range strings.Split(s.footerHint(12), " · ") {
-			if !strings.Contains(flat, seg) {
+		for _, seg := range s.proseBar() {
+			if !strings.Contains(flat, seg.Hint) {
 				t.Errorf("width %d: the footer segment %q is not on the pane:\n%s",
-					w, seg, reportPaneText(lines))
+					w, seg.Hint, reportPaneText(lines))
 			}
 		}
 	}
@@ -751,11 +751,12 @@ func TestReportTable_TheFooterReachesThePaneWhole(t *testing.T) {
 func TestReportTable_TheFooterNamesMovementOnlyWhereItMoves(t *testing.T) {
 	s := NewReorderAnalyticsReportScreen(Deps{})
 	reportSeed(s, 0, reportSweepRows(s.tabs[0].columns, 1), "")
-	if strings.Contains(s.footerHint(1), "move") {
-		t.Errorf("one row: the footer names movement it cannot do: %q", s.footerHint(1))
+	if hint := s.proseBar().hint(); strings.Contains(hint, "move") {
+		t.Errorf("one row: the footer names movement it cannot do: %q", hint)
 	}
-	if !strings.Contains(s.footerHint(2), "j/k ↑↓ move") {
-		t.Errorf("two rows: the footer must name the movement keys: %q", s.footerHint(2))
+	reportSeed(s, 0, reportSweepRows(s.tabs[0].columns, 2), "")
+	if hint := s.proseBar().hint(); !strings.Contains(hint, "j/k ↑↓ move") {
+		t.Errorf("two rows: the footer must name the movement keys: %q", hint)
 	}
 }
 
@@ -775,12 +776,11 @@ func TestReportTable_TheLoadingFooterNamesTheKeysThatSwitchReport(t *testing.T) 
 	swept := 0
 	for name, build := range reportScreenFixtures {
 		if len(build().tabs) < 2 {
-			// Skipped because the PRESS half would be vacuous, not because the
-			// bar says anything different: footerHint names the switch segment
-			// on every branch but the no-tabs one, so a one-tab screen would
-			// name it too, over a switchTab((0+1)%1) that lands where it stood.
-			// No report screen has one tab today — every fixture here has at
-			// least two — so this skip is reached by nothing.
+			// Skipped because a one-tab screen has no report to switch to, so
+			// its bar does not name the segment (ReportTableScreen.proseBar) and
+			// the press would land where it stood. No report screen has one tab
+			// today — every fixture here has at least two — so this skip is
+			// reached by nothing.
 			continue
 		}
 		for _, w := range jdeDrawableWidths() {
@@ -964,9 +964,15 @@ func reportAssertAssembled(t *testing.T, s *ReportTableScreen, w int) {
 // — the shape omsapi.parseError really produces — which reaches the bound at
 // every drawable pane rather than only at narrow ones.
 //
-// BOTH HALVES ARE ASSERTED so neither can later be traded for the other: the
-// footer reaches the CLIPPED pane whole, and a cut error body still carries the
-// row that says it was cut. Buying a line of error text with the mark, or with
+// The loaded branch is swept TWICE, the second time with every name carrying
+// stored line breaks (reportMultiLineNames) — the OVERSIZED ROW. Every budget
+// here counts a table row as one line, and nothing guaranteed it was one: watched
+// failing with reportCellOneLine reverted, 158 rows assembled into an 8-row pane
+// on the ForgeKey fleet report.
+//
+// BOTH HALVES ARE ASSERTED so neither can later be traded for the other: EVERY
+// segment the footer's record claims reaches the CLIPPED pane whole, and a cut
+// error body still carries the row that says it was cut. Buying a line of error text with the mark, or with
 // the way out, is the defect in each direction.
 //
 // SCOPED at frameFits, the screen's own answer for the branch it is drawing,
@@ -1002,10 +1008,14 @@ func TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas(t *testing.T) {
 										view)
 								}
 								flat := reportFlatPane(lines)
-								if !strings.Contains(flat, "esc back") {
-									t.Fatalf("%s tab %q %s at %dx%d: the footer names no way off the "+
-										"screen:\n%s", name, probe.tabs[tab].label, state.label, w, h,
-										reportPaneText(lines))
+								for _, seg := range s.proseBar() {
+									if !strings.Contains(flat, seg.Hint) {
+										t.Fatalf("%s tab %q %s at %dx%d: the footer claims %q and the "+
+											"pane does not carry it whole — a key named past the cut is a "+
+											"key named nowhere, and `esc/backspace back` is the way off the "+
+											"screen:\n%s", name, probe.tabs[tab].label, state.label, w, h,
+											seg.Hint, reportPaneText(lines))
+									}
 								}
 								if state.cutMark != "" && !strings.Contains(flat, state.cutMark) {
 									t.Fatalf("%s tab %q %s at %dx%d: the error body was cut with nothing "+
@@ -1056,5 +1066,32 @@ func reportFrameStates(rows [][]string) []reportFrameState {
 		{label: "loaded", seed: func(s *ReportTableScreen, tab int) {
 			reportSeed(s, tab, rows, omsapi.VarianceYardstickQuotedLeadTime)
 		}},
+		{label: "multi-line names", seed: func(s *ReportTableScreen, tab int) {
+			reportSeed(s, tab, reportMultiLineNames(s.tabs[tab].columns, rows),
+				omsapi.VarianceYardstickQuotedLeadTime)
+		}},
 	}
+}
+
+// reportMultiLineNames is rows with every IDENTIFIER cell carrying stored line
+// breaks — the OVERSIZED ROW: one table row that draws as many lines.
+//
+// A RUN OF BLANK LINES AROUND A SHORT NAME, ON PURPOSE, because that is the shape
+// the clip beside it could not stop: pickerClip counts CELLS and a line break is
+// none, so a cell whose visible text is short passed every width bound however
+// many lines it drew. A fixture of long lines was tried first and proved nothing
+// — the clip happened to cut it at its first break. Watched failing at HEAD
+// before reportCellOneLine existed: three such rows on the purchasing report at
+// 80x24 assembled 100 rows into an 18-row pane, with no `esc back` on it.
+func reportMultiLineNames(cols []reportColumn, rows [][]string) [][]string {
+	out := make([][]string, len(rows))
+	for r, row := range rows {
+		out[r] = append([]string(nil), row...)
+		for i, c := range cols {
+			if c.align == alignLeft && i < len(out[r]) {
+				out[r][i] = fmt.Sprintf("Acme%sCo %d-%d\r\n", strings.Repeat("\n", 30), r, i)
+			}
+		}
+	}
+	return out
 }

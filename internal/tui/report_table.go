@@ -47,7 +47,7 @@ func reportColWidths(cols []reportColumn, rows [][]string) []int {
 	}
 	for _, row := range rows {
 		for i := 0; i < len(cols) && i < len(row); i++ {
-			if cw := lipgloss.Width(row[i]); cw > w[i] {
+			if cw := lipgloss.Width(reportCellOneLine(row[i])); cw > w[i] {
 				w[i] = cw
 			}
 		}
@@ -230,9 +230,35 @@ func joinReportRow(cells []string, widths []int, cols []reportColumn) string {
 		if i < len(cols) {
 			align = cols[i].align
 		}
-		parts[i] = padCell(pickerClip(cell, widths[i]), widths[i], align)
+		parts[i] = padCell(pickerClip(reportCellOneLine(cell), widths[i]), widths[i], align)
 	}
 	return strings.Join(parts, strings.Repeat(" ", reportColGutter))
+}
+
+// reportCellOneLine puts a cell on ONE line: where it carries a line break, every
+// run of whitespace becomes one space, which is what the web report's HTML table
+// draws for the same stored value.
+//
+// A TABLE ROW IS ONE LINE BY CONSTRUCTION, and every budget on this screen counts
+// it as one: layoutRows hands the body N rows and View draws N rows. The
+// identifiers are OpenMakerSuite CharFields, nothing between an API write and
+// this pane refuses a newline in one, and the clip beside this could not stop it
+// either — pickerClip counts CELLS and a line break is none, so a name of
+// "Acme" and thirty blank lines passed every bound whole. Measured before this
+// existed, on the purchasing report at 80x24 with three such rows: the screen
+// assembled 100 rows into an 18-row pane and clampToBox, which drops from the
+// BOTTOM, took the whole footer — every key named nowhere, `esc back` included.
+//
+// Flattened rather than cut at the break: the value is still the operator's to
+// read, and a width that cannot hold it is fitReportTable's to abbreviate, with
+// the ellipsis that marks the cut. A cell with no break is returned untouched, so
+// no ordinary value is respaced. jdeStatusBreaks is the set, for the reason its
+// own doc gives about the tab and the vertical breaks.
+func reportCellOneLine(cell string) string {
+	if !strings.ContainsAny(cell, jdeStatusBreaks) {
+		return cell
+	}
+	return strings.Join(strings.Fields(cell), " ")
 }
 
 // reportTableLines builds the styled header line and the plain (unstyled) body
@@ -343,9 +369,10 @@ func dateOnly(s string) string {
 //
 // Each tab lazy-loads its rows on first view (loaders return pre-formatted
 // string cells so this screen is type-agnostic). ←/→ or [/] switch
-// tabs; j/k/pgup/pgdn/g/G scroll rows; r refreshes the active tab; esc returns
-// to the Reports hub. Read-only — mirrors the web report DATA, not its chart
-// widgets (there are none on these pages).
+// tabs; j/k/pgup/pgdn/g/G scroll rows; r refreshes the active tab; esc or
+// backspace returns to the Reports hub — proseBar is where the bar says so.
+// Read-only — mirrors the web report DATA, not its chart widgets (there are none
+// on these pages).
 // ---------------------------------------------------------------------------
 
 // reportBody is what a loader hands back.
@@ -495,6 +522,15 @@ func (s *ReportTableScreen) updateKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		if m.String() == "esc" {
 			return s, SwitchTo(WSReports, NewReportsScreen(s.deps))
 		}
+		return s, nil
+	}
+	// A load in flight or failed draws the working line or the failure IN PLACE
+	// of the rows, so the movement keys would walk a cursor through rows a refresh
+	// kept and nobody can see — and land the table somewhere else when the reply
+	// arrives. The load bar names what still acts there, and nothing else does
+	// (prose_bar.go's load-state note).
+	loading, loadErr := s.loadState()
+	if proseLoadKeyHidden(loading, loadErr, s.proseBar(), m.String()) {
 		return s, nil
 	}
 	st := &s.states[s.active]
@@ -682,13 +718,13 @@ const (
 // gives is the frame's own block, from the END.
 // TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas walks every branch
 // at every pane Root draws and is the check that claim is made on.
+//
+// The footer's rows are the RECORD's, folded against the same pane View draws it
+// into: proseBar.rows counts the blank above the bar, which reportFrameChromeRows
+// already holds, so the bar's own fold is that less one.
 func (s *ReportTableScreen) frameRows() int {
-	if len(s.tabs) == 0 {
-		return s.reportPaneRows() - reportFrameChromeRows - 1
-	}
-	st := &s.states[s.active]
 	return s.reportPaneRows() - reportFrameChromeRows -
-		len(pickerWrap(s.footerHint(len(st.rows)), s.reportPaneCells()))
+		(s.proseBar().rows(s.reportPaneCells()) - 1)
 }
 
 // frameFits reports whether the pane can hold the FLOOR of the frame View is
@@ -1037,65 +1073,73 @@ func reportDropPronoun(n int) string {
 	return "them"
 }
 
-// footerHint names every key an operator can SEE act in the state it is
-// drawing, with ONE recorded exception, and is FOLDED by the caller: at 80
-// columns it is 58 cells against a pane of 51, so drawn straight it lost "esc
-// back" — the way out of the screen — off the right edge with nothing saying it
-// had.
+// loadState is the ACTIVE tab's load as the two facts the prose-bar load rule
+// reads: whether a load is out (or has never been started — a tab nobody has
+// opened draws the same "Loading …" frame) and what the last one failed with.
 //
-// SEEN ACT is the whole of what the claim covers, and it is not a hedge: it is
-// the same reading of "acts" the rest of this package's bar-honesty sweeps use,
-// where a keypress that redraws the pane byte for byte has not acted. The state
-// that turns on it is the LOAD, where `r` is bound and fires a second identical
-// request whose only product is the "Loading …" line the pane is already
-// drawing — naming it there would advertise a key nothing on the frame can be
-// seen to answer. What is NOT covered by that reading is a key with a visible
-// product, and the loading branch used to omit ←/→ and [/] on exactly those
-// grounds while switchTab moved the highlight and replaced the body under it:
-// a false claim in the one state every operator lands in, the screen's own
-// first frame. They are named there now, in the words the error branch already
-// uses, so the two states cannot describe one affordance two ways.
-//
-// THE EXCEPTION IS `backspace`, which updateKey binds alongside `esc` and this
-// bar deliberately does not spell. It is a universal esc alias across this app,
-// named by no other surface, so naming it here alone would make this one bar
-// disagree with every other one for two cells it would rather spend on a key an
-// operator has to be told about — the same trade poFormNavAliases records for
-// Tab / Shift-Tab on the columnar forms. Recorded rather than left implicit,
-// because an unqualified "exactly" is a documented claim the code does not
-// honour.
-//
-// NO BAR-HONESTY SWEEP COVERS THIS BAR, said plainly because a claim in prose
-// either states what a named check proves or should not be written:
-// ReportTableScreen is neither a *ListScreen nor a jdeScreen, so
-// list_bar_honesty_test.go (which walks the ListScreen footers) and the
-// columnar sweep in po_view_jde_test.go (which walks the []actionBarItem bars)
-// both miss it, and nothing presses the key space against this one. Giving it
-// that coverage means giving the screen a machine-readable bar; until then the
-// claim above is held by reading, which is exactly how the alias got lost.
-func (s *ReportTableScreen) footerHint(rowCount int) string {
+// Per tab and not per screen, because that is where this screen keeps it: every
+// tab lazy-loads on first view and refreshes on its own, so "is this screen
+// loading" has no answer until it is asked of the tab the operator is standing
+// on — which is the tab the frame, the bar and the key gate all describe.
+func (s *ReportTableScreen) loadState() (loading bool, loadErr string) {
 	if len(s.tabs) == 0 {
-		return "esc back"
+		return false, ""
 	}
 	st := &s.states[s.active]
+	return st.loading || !st.loaded, st.err
+}
+
+// proseBar is the footer as a RECORD (prose_bar.go): exactly the keystrokes
+// updateKey answers in the state the frame is drawing, each spelled by the words
+// the operator reads, so prose_bar_honesty_test.go and the load-state sweep beside
+// it press the whole key space against it.
+//
+// WHAT THE LITERAL THIS REPLACED COULD NOT SAY. It named `esc back` and never
+// `backspace`, which updateKey binds beside it — recorded as a deliberate
+// exception for two cells, and the one key on every frame of this screen that
+// acted unnamed; proseBarBack is the segment for a sheet that binds both. It opened
+// with the row count, which is a fact and not a key, so a record cannot carry it:
+// the count rides the marker row now, the one row whose job is to say how much of
+// the table the pane is not showing (View). And nothing could press keys at it —
+// ReportTableScreen is neither a *ListScreen nor on the columnar layer — so every
+// claim above it was held by reading, which is how the alias got lost.
+//
+// THE STATES, each saying only what its frame lets an operator see act:
+//
+//   - A LOAD OUT: switching report, a second `r` (it starts the load again), and
+//     the way back. The movement keys are not named and do not act: the rows a
+//     refresh kept are not on the frame (updateKey's gate).
+//   - A LOAD FAILED: `r retry` leads, because it is the recovery, then the same.
+//   - LOADED: the movement vocabulary where there is a second row to move to
+//     (proseNavCursor — the pager moves the CURSOR and clamps it, so it moves
+//     exactly when `j` does), then switching, refreshing and leaving.
+//
+// `←/→ [/] switch report` is named only where there is another report to switch
+// to. Every report screen in the program has several, so the gate is reached by
+// none of them; it is there because a one-tab table's switch lands where it
+// stood, and a bar is answerable for the table it is drawn on.
+//
+// THE LAYOUT DOES NOT MOVE WITH THE BAR. frameRows reads the folded record, and
+// the give-order it feeds — the legend and this bar never give, the body floors at
+// one row, the block under the table gives from the end — is layoutRows' and is
+// unchanged by what the bar says.
+func (s *ReportTableScreen) proseBar() proseBar {
+	if len(s.tabs) == 0 {
+		return proseBar{proseBarEsc}
+	}
+	var sw proseBar
+	if len(s.tabs) > 1 {
+		sw = proseBar{{Keys: []string{"left", "right", "[", "]"}, Hint: "←/→ [/] switch report"}}
+	}
+	loading, loadErr := s.loadState()
 	switch {
-	case st.loading || !st.loaded:
-		return "←/→ [/] switch report · esc back"
-	case st.err != "":
-		return "r retry · ←/→ [/] switch report · esc back"
-	case rowCount == 0:
-		return "←/→ [/] switch report · r refresh · esc back"
+	case loading:
+		return append(append(sw, proseBarRefresh), proseBarBack)
+	case loadErr != "":
+		return append(append(proseBar{proseBarRetry}, sw...), proseBarBack)
 	}
-	hint := fmt.Sprintf("%d %s", rowCount, plural("row", rowCount))
-	if rowCount > 1 {
-		// The movement keys are named because they are BOUND: the footer used
-		// to say "j/k move" alone while the arrows, pgup/pgdn, g/G and home/end
-		// all worked, which is the standing vocabulary named in list_nav.go
-		// half-spelled. Named only above one row, because that is where any of
-		// them moves anything.
-		hint += " · j/k ↑↓ move · pgup/pgdn page · g/G home/end top/bottom"
-	}
-	return hint + " · ←/→ [/] switch report · r refresh · esc back"
+	bar := proseNavCursor(listNavMoves(len(s.states[s.active].rows)))
+	return append(append(bar, sw...), proseBarRefresh, proseBarBack)
 }
 
 func (s *ReportTableScreen) View() string {
@@ -1105,8 +1149,7 @@ func (s *ReportTableScreen) View() string {
 
 	if len(s.tabs) == 0 {
 		b.WriteString(StyleMuted.Render("No reports.") + "\n")
-		b.WriteString("\n" + StyleMuted.Render(s.footerHint(0)))
-		return b.String()
+		return b.String() + "\n" + s.proseBar().render(cells)
 	}
 
 	tab := s.tabs[s.active]
@@ -1117,15 +1160,16 @@ func (s *ReportTableScreen) View() string {
 			b.WriteString(StyleMuted.Render(line) + "\n")
 		}
 	}
-	writeFooter := func(rowCount int) {
-		b.WriteString("\n")
-		writeMuted(pickerWrap(s.footerHint(rowCount), cells))
+	// footer is the frame so far, the blank and the folded record: the same
+	// fold frameRows took the footer's rows from, so the budget and the drawn bar
+	// cannot disagree, and the bar is the last thing on every branch.
+	footer := func() string {
+		return b.String() + "\n" + s.proseBar().render(cells)
 	}
 
 	if st.loading || !st.loaded {
 		writeMuted(reportBlockRows(pickerWrap("Loading "+tab.label+"…", cells), s.frameRows()))
-		writeFooter(0)
-		return strings.TrimRight(b.String(), "\n")
+		return footer()
 	}
 	if st.err != "" {
 		// The detail is bounded BEFORE the folder sees it. omsapi.parseError
@@ -1184,8 +1228,7 @@ func (s *ReportTableScreen) View() string {
 			}
 			b.WriteString(style.Render(line) + "\n")
 		}
-		writeFooter(0)
-		return strings.TrimRight(b.String(), "\n")
+		return footer()
 	}
 	if len(st.rows) == 0 {
 		// The block under the table gives FIRST and the fact that there are no
@@ -1201,8 +1244,7 @@ func (s *ReportTableScreen) View() string {
 		}
 		writeMuted(lines)
 		writeMuted(below)
-		writeFooter(0)
-		return strings.TrimRight(b.String(), "\n")
+		return footer()
 	}
 
 	writeMuted(s.legendLines(tab, st))
@@ -1223,6 +1265,19 @@ func (s *ReportTableScreen) View() string {
 		b.WriteString(line + "\n")
 	}
 	if marker := listMarkerLine(st.windowStart > 0, len(body)-end, cells); marker != "" {
+		// The ROW COUNT rides this row, where it used to open the footer. A count
+		// is a fact and not a key, so the record cannot carry it; and this is the
+		// row whose whole job is saying how much of the table the pane is not
+		// showing, drawn exactly when that is some of it. Where every row is on
+		// the pane there is nothing the count adds to what the operator can see.
+		//
+		// It costs no row: the marker row is already reserved (rowBudget). It is
+		// added only where it fits WHOLE, after the marker's own give-order has
+		// run, so the arrows and their figure are never traded for it and the
+		// total is never drawn cut into a different number.
+		if count := fmt.Sprintf(" · %d %s", len(body), plural("row", len(body))); lipgloss.Width(marker+count) <= cells {
+			marker += count
+		}
 		b.WriteString(StyleMuted.Render(marker) + "\n")
 	}
 
@@ -1231,8 +1286,7 @@ func (s *ReportTableScreen) View() string {
 		belowAll = belowAll[:shownBelow]
 	}
 	writeMuted(belowAll)
-	writeFooter(len(st.rows))
-	return strings.TrimRight(b.String(), "\n")
+	return footer()
 }
 
 // renderTabBar draws a WINDOW around the active tab rather than every tab in
