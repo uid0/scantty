@@ -3,6 +3,7 @@ package omsapi
 import (
 	"context"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -22,8 +23,9 @@ type ProjectStorageEvent struct {
 
 // ProjectStorageStint mirrors backend ProjectStorageStintSerializer —
 // one member's project-storage assignment from start through expiry,
-// purgatory, and removal. status is a computed field: "active" /
-// "warning" / "expired" / "purgatory" / "removed".
+// purgatory, and removal. status is computed server-side
+// (ProjectStorageStint.compute_status, terminal state wins): "active" /
+// "expiring_soon" / "expired" / "purgatory_warned" / "purgatory" / "removed".
 type ProjectStorageStint struct {
 	ID                    int        `json:"id"`
 	StintID               string     `json:"stint_id"`
@@ -56,8 +58,15 @@ type ProjectStorageStint struct {
 	ExpiryWeek      int                   `json:"expiry_week"`
 	ExpiryDayOfYear int                   `json:"expiry_day_of_year"`
 	Events          []ProjectStorageEvent `json:"events"`
-	CreatedAt       time.Time             `json:"created_at"`
-	UpdatedAt       time.Time             `json:"updated_at"`
+	// QRCodeURL is where the stint's stored QR PNG is served, or "" (the wire's
+	// null) when none has been generated. Its FORM depends on the endpoint: the
+	// retrieve builds it absolute from the request, while generate-qr, the
+	// other warden writes and by-member serialize without a request and send
+	// the bare /media/… path. So a screen shows the value off a fresh GET rather
+	// than off a write's reply.
+	QRCodeURL string    `json:"qr_code_url"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ListProjectStorageStints returns the paginated stint list. Useful
@@ -149,6 +158,119 @@ func (c *Client) StartProjectStorageStint(ctx context.Context, body ProjectStora
 func (c *Client) MarkProjectStorageStintRemoved(ctx context.Context, stintID, note string) error {
 	path := "/api/project-storage/stints/" + stintID + "/mark-removed/"
 	return c.Post(ctx, path, map[string]string{"note": note}, nil)
+}
+
+// The warden's enforcement actions — the web's FacilitiesProjectStoragePage
+// buttons, one client call each. The contract is OMS's
+// project_storage.views.ProjectStorageStintViewSet, recorded off a real backend
+// into testdata/ (README.md carries the provenance), and what is worth knowing
+// before calling any of them:
+//
+//   - WHO MAY ACT DIFFERS BY ACTION. send-violation-notice and move-to-purgatory
+//     are IsAdminUser (is_staff); by-member and generate-qr are
+//     IsStorageAdminOrStaff, so a volunteer in the "Storage Admin" group may
+//     list a member's stints and regenerate a QR but not notify or purgatory
+//     anybody. The refusal is OMS's standardized envelope (APIError.Code
+//     `permission_denied`) carrying the server's sentence.
+//   - THE STATE RULES ARE THE SERVER'S AND ARE RELAYED, not re-implemented as
+//     refusals: a notice outside expiring_soon / expired / purgatory_warned is a
+//     409 `invalid_state_for_notice`, a notice to a stint with no email is a 422
+//     `missing_email` (nothing is stamped), and purgatory before a notice is a
+//     409 `notice_required`. Those three bodies are hand-built
+//     `{"detail": …, "code": …}` and never reach the exception handler, so
+//     parseError hands over the raw JSON and AsDetailRefusal recovers the
+//     sentence. generate-qr's rate limit is a 429 `{"error": "<prose>"}`, which
+//     is AsReceivingRefusal's shape.
+//   - A WRITE'S REPLY CARRIES THE EVENTS AS THEY WERE BEFORE THE WRITE. The
+//     viewset prefetches `events` in get_object and appends the new event
+//     afterwards, so the recorded notice reply says `"events": []` beside a
+//     stamped notice_sent_at. A caller that wants the audit trail re-fetches.
+
+// SendProjectStorageViolationNotice emails the member the "your stint expired"
+// notice and stamps notice_sent_at, which is what dates the purgatory deadline —
+// so sending it again on an already-warned stint RESTARTS that clock.
+//
+//	POST /api/project-storage/stints/{stintID}/send-violation-notice/
+//
+// The web posts an empty object and the view reads nothing off the body.
+func (c *Client) SendProjectStorageViolationNotice(ctx context.Context, stintID string) (*ProjectStorageStint, error) {
+	var out ProjectStorageStint
+	path := "/api/project-storage/stints/" + url.PathEscape(stintID) + "/send-violation-notice/"
+	if err := c.Post(ctx, path, map[string]any{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// MoveProjectStorageStintToPurgatory records that the warden has taken the
+// items out of project storage. It frees the racking slot at once — the stint
+// keeps `slot` as the history of where the items came out of — and stamps
+// moved_to_purgatory_at.
+//
+//	POST /api/project-storage/stints/{stintID}/move-to-purgatory/
+//	{"purgatory_location_name": "<where they went>"}
+//
+// The key is ALWAYS sent, blank included, because that is what the web sends
+// and because the view treats blank as "keep the stored location" (`if
+// location:`) — a blank here never erases one.
+func (c *Client) MoveProjectStorageStintToPurgatory(ctx context.Context, stintID, purgatoryLocation string) (*ProjectStorageStint, error) {
+	var out ProjectStorageStint
+	path := "/api/project-storage/stints/" + url.PathEscape(stintID) + "/move-to-purgatory/"
+	body := map[string]string{"purgatory_location_name": purgatoryLocation}
+	if err := c.Post(ctx, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListProjectStorageStintsByMember returns every stint a member has held, most
+// recent first — the warden's "is this a serial offender?" view. A bare JSON
+// array, not a page.
+//
+//	GET /api/project-storage/stints/by-member/{username}/
+//
+// THE ROUTE CANNOT MATCH EVERY USERNAME. Its url_path is
+// `by-member/(?P<username>[^/.]+)`, so a username with a dot in it (Django's
+// validator allows `.`) never reaches the view: the recorded answer for
+// `bob.jones` is the router's HTML 404 page, not an empty list. The web's
+// byMember has the same hole, so this is an OMS limitation to report rather
+// than something a client can route around; callers should say so rather than
+// relay a bare 404.
+func (c *Client) ListProjectStorageStintsByMember(ctx context.Context, username string) ([]ProjectStorageStint, error) {
+	var out []ProjectStorageStint
+	path := "/api/project-storage/stints/by-member/" + url.PathEscape(username) + "/"
+	if err := c.Get(ctx, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ProjectStorageByMemberUnroutable reports whether a username is one the
+// by-member route's pattern cannot match, so a 404 for it is the route and not
+// an answer about the member. It reads the same character class the url_path
+// excludes.
+func ProjectStorageByMemberUnroutable(username string) bool {
+	return strings.ContainsAny(username, "./")
+}
+
+// GenerateProjectStorageStintQR regenerates the QR PNG stored on the stint (the
+// warden page's "Generate QR" / "Regenerate QR"), replacing any previous one.
+// The PNG encodes the stint's /scan/project-storage/<id> URL; the Pi label
+// daemon does not read it — labels are rendered at print time — so this is the
+// stored image the web previews, not a reprint.
+//
+//	POST /api/project-storage/stints/{stintID}/generate-qr/
+//	{"include_logo": true}
+//
+// include_logo is what the web sends. Staff are not rate limited; anyone else
+// is held to five a minute per stint and gets the 429 `{"error": …}`.
+func (c *Client) GenerateProjectStorageStintQR(ctx context.Context, stintID string) (*ProjectStorageStint, error) {
+	var out ProjectStorageStint
+	path := "/api/project-storage/stints/" + url.PathEscape(stintID) + "/generate-qr/"
+	if err := c.Post(ctx, path, map[string]bool{"include_logo": true}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ProjectStoragePrintQueueEntry is one stint pending a label print on the
