@@ -356,6 +356,15 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.asset != nil {
 				return s, SwitchTo(WSAssets, NewAssetDocumentsScreen(s.deps, s.assetID, s.asset.Name))
 			}
+		case "K":
+			// The checklists with a step that scans this asset, and a run of the
+			// one chosen — the web's AssetScanPage offers the same list under "Are
+			// you completing a checklist?". Uppercase K is the checklist letter the
+			// Facilities menu already uses, and it is always available so an asset
+			// no checklist names says so rather than hiding the key.
+			if s.asset != nil {
+				return s, SwitchTo(WSAssets, NewAssetChecklistsScreen(s.deps, s.assetID, s.asset.Name))
+			}
 		case "L":
 			// Open the interlock: lock / unlock / disable / enable. Uppercase L
 			// for the sibling-surface convention the other four uppercase letters
@@ -770,6 +779,7 @@ func (s *AssetDetailScreen) barFor(scrolls bool) proseBar {
 	return append(out,
 		proseBarItem{Keys: []string{"M"}, Hint: "M meters"},
 		proseBarItem{Keys: []string{"D"}, Hint: "D documents"},
+		proseBarItem{Keys: []string{"K"}, Hint: "K checklists"},
 		proseBarItem{Keys: []string{"S"}, Hint: "S parts"},
 		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
 		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
@@ -820,6 +830,7 @@ func (s *AssetDetailScreen) loadBar() proseBar {
 		out = append(out,
 			proseBarItem{Keys: []string{"M"}, Hint: "M meters"},
 			proseBarItem{Keys: []string{"D"}, Hint: "D documents"},
+			proseBarItem{Keys: []string{"K"}, Hint: "K checklists"},
 			proseBarItem{Keys: []string{"S"}, Hint: "S parts"},
 			proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
 		)
