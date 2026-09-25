@@ -949,8 +949,7 @@ func (s *WorkOrderScanReviewScreen) listHeader() jdeHeader {
 	// The one thing a confidence figure does NOT say, on the frame where it is
 	// the only evidence: there is no picture here to check it against.
 	width := s.bodyWidth()
-	h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(woScanImageCaveat, width),
-		func(rows int) []string { return jdeCaveatLinesIn(woScanImageCaveat, width, rows) })
+	h = h.addCaveatBlock(jdeHeadContext, jdeCaveatLines(woScanImageCaveat, width))
 	return h.add(jdeHeadEssential, StyleMuted.Render(
 		woReviewGridRow("Sel", "Reading", "Conf", s.labelWidth(), s.woReviewConfWidth())))
 }

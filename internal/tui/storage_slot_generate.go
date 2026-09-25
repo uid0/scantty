@@ -1023,11 +1023,10 @@ func (s *StorageSlotGenerateScreen) levelListHeader() jdeHeader {
 		add(jdeHeadContext, StyleJDEHeading.Render("Levels on this rack")).
 		add(jdeHeadEssential, jdeIndent+StyleMuted.Render(
 			"Early letters are low, late letters high."))
-	// FITTED, so a short pane re-draws the detail with its cut marked rather
-	// than dropping its tail rows (jdeHeader.addFitted).
+	// A CAVEAT, so a short pane draws the detail whole or not at all rather
+	// than dropping its tail rows (jdeHeader.addCaveat).
 	width := s.bodyWidth()
-	h = h.addFitted(jdeHeadContext, jdeHeadContext, jdeCaveatLines(levelListDetail, width),
-		func(rows int) []string { return jdeCaveatLinesIn(levelListDetail, width, rows) })
+	h = h.addCaveat(jdeHeadContext, jdeCaveatLines(levelListDetail, width))
 	if len(s.levels) == 0 {
 		h = h.add(jdeHeadContext, "", jdeIndent+StyleMuted.Render("(no levels yet)"))
 	}

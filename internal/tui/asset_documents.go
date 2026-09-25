@@ -729,13 +729,13 @@ func (s *AssetDocumentsScreen) uploadHeader() jdeHeader {
 			Value:   fitCellIf(s.supersedeTitle, jdeStripWidth(s.bodyWidth(), assetLabelW)),
 			Focused: true,
 		}, assetLabelW, s.bodyWidth()))
-		// FITTED, not added as independent rows: jdeFitHeader gives ground from
-		// the END within a rank and this caveat is ONE SENTENCE folded, so a trim
-		// left a fragment ending on a whole word — which is what a finished
-		// sentence looks like. Measured at 80x12, a pane Root really draws.
+		// A CAVEAT, not independent rows: jdeFitHeader gives ground from the END
+		// within a rank and this caveat is ONE SENTENCE folded, so a trim left a
+		// fragment ending on a whole word — which is what a finished sentence
+		// looks like. Measured at 80x12, a pane Root really draws. It is drawn
+		// whole or not at all (jdeHeader.addCaveat).
 		width := s.bodyWidth()
-		h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(supersedeCaveat, width),
-			func(rows int) []string { return jdeCaveatLinesIn(supersedeCaveat, width, rows) })
+		h = h.addCaveatBlock(jdeHeadContext, jdeCaveatLines(supersedeCaveat, width))
 	} else {
 		h = h.add(jdeHeadEssential, renderJDEField(jdeField{
 			Label: "Asset", Kind: jdeValue,

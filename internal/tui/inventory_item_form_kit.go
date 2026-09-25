@@ -624,22 +624,15 @@ const kitListGuidance = "What one kit contains. Receiving a kit credits these it
 func (s *InventoryItemFormScreen) kitListHeader() jdeHeader {
 	width := s.bodyWidth()
 	h := jdeHeader(nil).add(jdeHeadContext, StyleJDEHeading.Render("Kit components"))
-	// FITTED, so a short pane re-draws the guidance with its cut marked rather
+	// A CAVEAT, so a short pane draws the guidance whole or not at all rather
 	// than dropping its tail — which is "the kit itself never carries stock",
-	// the half of the sentence that matters (jdeHeader.addFitted).
-	guide := func(rows int) []string {
-		w := kitNoteWidth(width)
-		lines := jdeWrapNote(kitListGuidance, w)
-		if rows > 0 {
-			lines = foldKeepRows(lines, rows, w)
-		}
-		out := make([]string, 0, len(lines))
-		for _, line := range lines {
-			out = append(out, jdeIndent+StyleMuted.Render(line))
-		}
-		return out
+	// the half of the sentence that matters (jdeHeader.addCaveat).
+	w := kitNoteWidth(width)
+	guide := jdeWrapNote(kitListGuidance, w)
+	for i, line := range guide {
+		guide[i] = jdeIndent + StyleMuted.Render(line)
 	}
-	h = h.addFitted(jdeHeadContext, jdeHeadContext, guide(0), guide)
+	h = h.addCaveat(jdeHeadContext, guide)
 	if len(s.kitRows) == 0 {
 		return h.add(jdeHeadContext, "", jdeIndent+StyleMuted.Render("No components yet.")).
 			add(jdeHeadEssential, jdeIndent+StyleStatusWarn.Render(

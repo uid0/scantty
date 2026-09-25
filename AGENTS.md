@@ -549,11 +549,14 @@ knowing before touching any of it:
   the operator's Reason box, and `jdeLines` keeps a block's START, so a caveat
   written ahead of that row pushes the row off a short pane while one written
   after it is simply the tail a short window drops. `jdeFitHeader` then gives
-  ground BY RANK and, within a rank, from the END, so a multi-row caveat loses
-  its tail — which is where a remedy naturally falls. Two wordings had that dead
-  end and were caught by the height sweep rather than by reading (80x14, then
-  80x13 after shortening); shortening only moves the height, because the budget
-  reaches zero one row at a time. So the first caveat is a SINGLE row wherever it
+  ground BY RANK, and it used to give it within a rank from the END, so a
+  multi-row caveat lost its tail — which is where a remedy naturally falls. Two
+  wordings had that dead end and were caught by the height sweep rather than by
+  reading (80x14, then 80x13 after shortening); shortening only moves the
+  height, because the budget reaches zero one row at a time. A caveat is now
+  dropped WHOLE instead (`jdeHeader.addCaveat`), and that does not retire what
+  follows: a warning dropped whole is still a warning the operator was not
+  given. So the first caveat is a SINGLE row wherever it
   is drawn and carries the loss AND the remedy, and the prose explaining it is a
   second caveat behind it — the headline-then-detail split `setErr` makes on the
   status row, for the same reason.
@@ -2163,33 +2166,13 @@ touching any screen an operator drives:
   budget — which `receive_form.go`'s `headerSplit` really pays on a short pane —
   the content is kept and the cut is marked with the ellipsis instead, because a
   mark with no content beneath it is the rule inverted rather than obeyed.
-  **A VALUE FOLDED INTO A PINNED HEADER GOES IN THROUGH `jdeHeader.addFitted`**,
-  because `jdeFitHeader` gives ground from the END of a rank, where a fold's
-  cut mark sits. A fitted block is re-drawn at the rows the trim leaves it by
-  its own refit (`failDetailLines`, `pickerNote.renderLinesIn`, or
-  `jdeCaveatLinesIn`, all marking through `foldKeepRows`); a block of
-  INDEPENDENT rows keeps `add`, because dropping one leaves no fragment that
-  can read as complete. `header_fold_mark_test.go` and
-  `fail_detail_mark_test.go` hold the invariant through rendered panes.
-  **FOLDING A VALUE IS NOT THE SAME AS TELLING THE LAYER IT IS ONE VALUE**, and
-  that is how six sites got it wrong AFTER `addFitted` existed. Each folded its
-  caveat correctly with `jdeCaveatLines` and then handed the result to
-  `addBlock`, which adds INDEPENDENT rows — so the fold was right and the
-  row-by-row trim under it was the very defect `addFitted` was written for.
-  Five of the six are reached by a swept state; the sixth (the meter grid's drop
-  note) is not, and was converted because the MECHANISM is the same, not because
-  a pane reported it. Measured at 80 columns and drawable heights before the fix:
-  69 panes on the
-  asset-document supersede confirm, 54 on the meter adjust, 51 on the new meter,
-  47 on the scan review, 2 on the reading grid, each drawing a fragment that
-  ended on a whole word. `addFittedBlock` is the drop-in — it prepends the same
-  separator `addBlock` does — so the grep worth running when a caveat is added
-  is `addBlock(.*jdeCaveatLines`, which should find nothing.
-  The COMPANION half is that `headerFoldValues` (`header_fold_mark_test.go`) is
-  a hand-kept roster of what each screen folds, so a new screen is invisible to
-  the sweep until somebody puts it there; the constants it reads are named
-  (`meterDropNote`, `readingDropNote`, `woScanImageCaveat`) precisely so the
-  builder and the sweep read ONE string rather than two copies of a sentence.
+  **A SENTENCE FOLDED INTO A PINNED HEADER GOES IN AS ONE BLOCK.** A caveat
+  goes through `jdeHeader.addCaveat` / `addCaveatBlock` and is kept whole or
+  dropped whole. A value whose head stands on its own goes through `addFitted`
+  and is re-drawn at fewer rows by its marking refit. `jdeFitHeader`'s doc owns
+  the distinction and the handling of rows freed by an atomic drop;
+  `header_caveat_test.go` derives and sweeps caveat sites, while
+  `header_fold_mark_test.go` and `fail_detail_mark_test.go` cover fitted values.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
   exempt — the CART row included, which gives ground in its own STATED order
   because clipping its label alone was not enough: the LABEL first, then the

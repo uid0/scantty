@@ -1149,9 +1149,14 @@ func (s *VendorWorkOrderDetailScreen) sheetHeader() jdeHeader {
 	}
 	h = h.add(jdeHeadEssential, StyleJDEHeading.Render(vwoIdentityLine(s.wo, s.bodyWidth())))
 	if blocked := s.vwoBlockedBy(vwoAdvanceFor(s.wo.Status)); blocked != "" {
-		for _, line := range jdeCaveatLines(blocked, s.bodyWidth()) {
-			h = h.add(jdeHeadContext, StyleStatusWarn.Render(line))
+		// One CAVEAT, not a row per folded line: given ground row by row, a short
+		// pane kept the head of the reason the step is blocked and dropped the
+		// rest, which reads as the whole reason (jdeHeader.addCaveat).
+		lines := jdeCaveatLines(blocked, s.bodyWidth())
+		for i, line := range lines {
+			lines[i] = StyleStatusWarn.Render(line)
 		}
+		h = h.addCaveat(jdeHeadContext, lines)
 	}
 	return h.add(jdeHeadDecorative, "")
 }

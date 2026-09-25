@@ -1201,21 +1201,28 @@ const (
 
 // jdeHeadRow is one line of a pinned header and how expendable it is.
 //
-// block is set on every row of a block added with addFitted, and it is the
-// same pointer across them: that identity is how jdeFitHeader knows which rows
-// are one value to be re-drawn together rather than independent facts to be
-// dropped one at a time.
+// block is set on every row of a block added with addFitted or addCaveat, and
+// it is the same pointer across them: that identity is how jdeFitHeader knows
+// which rows are one value rather than independent facts to be dropped one at a
+// time.
 type jdeHeadRow struct {
 	Text  string
 	Rank  jdeHeadRank
 	block *jdeHeadBlock
 }
 
-// jdeHeadBlock is what a fitted block hands the layer: the means to draw itself
-// again at fewer rows. See addFitted.
+// jdeHeadBlock is one value spread across header rows, in one of the two shapes
+// the layer knows how to give ground on without leaving a fragment.
+//
+// refit set: a FITTED block (addFitted), which is re-drawn at the rows it kept
+// with its cut marked. refit nil: a CAVEAT (addCaveat), which is kept whole or
+// dropped whole and is never drawn in part at all.
 type jdeHeadBlock struct {
 	refit func(rows int) []string
 }
+
+// whole reports whether the block may only be drawn complete.
+func (b *jdeHeadBlock) whole() bool { return b != nil && b.refit == nil }
 
 // jdeHeader is a pinned header: the rows in DISPLAY order, each carrying the
 // rank that decides when it is given up. A nil header is a frame with none,
@@ -1298,10 +1305,14 @@ func (h jdeHeader) addFitted(lead, rest jdeHeadRank, lines []string, refit func(
 	if len(lines) == 0 {
 		return h
 	}
-	if refit == nil || len(lines) == 1 {
+	if len(lines) == 1 {
 		// One row has no fragment to leave: it is drawn whole or not at all.
-		return h.add(lead, lines[0]).add(rest, lines[1:]...)
+		return h.add(lead, lines[0])
 	}
+	// A nil refit leaves a block with no means to re-draw itself, and the only
+	// shape a short pane can then leave that is not a fragment is none of it —
+	// so it becomes a caveat rather than being handed back as independent rows,
+	// which is what it used to be and is the defect addCaveat exists to remove.
 	b := &jdeHeadBlock{refit: refit}
 	for i, line := range lines {
 		rank := rest
@@ -1320,6 +1331,51 @@ func (h jdeHeader) addFittedBlock(rank jdeHeadRank, lines []string, refit func(r
 		return h
 	}
 	return h.add(jdeHeadDecorative, "").addFitted(rank, rank, lines, refit)
+}
+
+// addCaveat appends a CAVEAT — prose the builder folded across rows — as one
+// block that a short pane keeps WHOLE or drops WHOLE, and never draws in part.
+//
+// A fitted block (addFitted) is the right shape for a value whose HEAD stands on
+// its own: the first lines of an error body are still the start of the error,
+// and a keypress's answer cut after its first clause still answered. A caveat is
+// not that shape. It is a claim, its clauses qualify one another, and whatever a
+// trim leaves is a sentence its author never wrote. The instance that routed this
+// here was the line-void prompt: a remedy ending in the order's number folded so
+// the bare number sat alone on the last row, jdeFitHeader dropped exactly that
+// row, and the pane told the operator to "search by number" with no number on it.
+// It was fixed there by putting the number ahead of the phrase — a property of
+// where one sentence's words happen to break — while every other multi-row caveat
+// went on depending on its own. And a caveat re-drawn with its cut MARKED is the
+// same fault with an ellipsis on it: "Voids the order and cascades to every line…"
+// reads as the warning with its consequence withheld, not as a warning about to
+// finish. So a caveat is ATOMIC, and the layer, not each sentence, holds that.
+//
+// ONE rank, because an atomic block has one fate. A caveat marked essential and
+// folded onto two rows is a promise the geometry cannot keep — the smallest
+// drawable budget keeps one header row (jdeMinBudget), so the block would go
+// whole — and TestJDEForm_EveryEssentialHeaderRowIsOnThePane is where that
+// fails. A block whose first row must survive on its own is a fitted block.
+//
+// A one-row caveat is simply a row: it has no part to be drawn.
+func (h jdeHeader) addCaveat(rank jdeHeadRank, lines []string) jdeHeader {
+	if len(lines) <= 1 {
+		return h.add(rank, lines...)
+	}
+	b := &jdeHeadBlock{}
+	for _, line := range lines {
+		h = append(h, jdeHeadRow{Text: line, Rank: rank, block: b})
+	}
+	return h
+}
+
+// addCaveatBlock is addBlock for a caveat: the separator comes with it, and
+// nothing at all is appended when the caveat is empty.
+func (h jdeHeader) addCaveatBlock(rank jdeHeadRank, lines []string) jdeHeader {
+	if len(lines) == 0 {
+		return h
+	}
+	return h.add(jdeHeadDecorative, "").addCaveat(rank, lines)
 }
 
 // lines is the header as the frame draws it when nothing has to give.
@@ -1347,35 +1403,63 @@ func (h jdeHeader) lines() []string {
 //
 // A dropped row is claimed about by nothing — a window promises a remainder
 // and a header does not — so a trim that takes WHOLE values leaves nothing
-// looking complete that is not. A block added with addFitted is the one shape
-// where a trim would take PART of a value, and it is re-drawn at the rows it
-// kept rather than cut, so its own mark says what went (addFitted).
+// looking complete that is not. Two shapes of block are where a trim would
+// otherwise take PART of a value: a FITTED block is re-drawn at the rows it kept,
+// so its own mark says what went (addFitted), and a CAVEAT is given up as ONE
+// unit — kept whole or dropped whole — so no part of it is ever drawn
+// (addCaveat).
+//
+// A caveat dropped whole can give back MORE rows than the budget needed, and
+// those rows are not wasted and not handed to the body: the body was windowed
+// against `avail` before this ran, and every scroll and bar answer on the frame
+// was measured against that same split, so the header's height is not this
+// function's to change. They are offered back, most important first, to the
+// units already given up that fit in them — which can only be units that went
+// EARLIER, and so are no more important than the caveat that did not fit — and
+// whatever is still left over is drawn blank at the END of the header, where a
+// blank reads as the separator it usually is. header + body is still EXACTLY
+// the budget.
 func jdeFitHeader(header jdeHeader, budget, avail int) []string {
 	keep := budget - avail
 	if keep < 0 {
 		keep = 0
 	}
-	drop := len(header) - keep
-	if drop <= 0 {
+	if len(header) <= keep {
 		return header.lines()
 	}
-	kept := make([]bool, len(header))
+	units := jdeHeadUnits(header)
+	kept := make([]bool, len(units))
 	for i := range kept {
 		kept[i] = true
 	}
-	for rank := jdeHeadDecorative; rank >= jdeHeadEssential && drop > 0; rank-- {
-		for i := len(header) - 1; i >= 0 && drop > 0; i-- {
-			if kept[i] && header[i].Rank == rank {
-				kept[i] = false
-				drop--
+	have := len(header)
+	var given []int
+	for rank := jdeHeadDecorative; rank >= jdeHeadEssential && have > keep; rank-- {
+		for u := len(units) - 1; u >= 0 && have > keep; u-- {
+			if kept[u] && units[u].rank == rank {
+				kept[u] = false
+				have -= units[u].rows()
+				given = append(given, u)
 			}
+		}
+	}
+	for i := len(given) - 1; i >= 0 && have < keep; i-- {
+		if u := given[i]; units[u].rows() <= keep-have {
+			kept[u] = true
+			have += units[u].rows()
+		}
+	}
+	rowKept := make([]bool, len(header))
+	for u, unit := range units {
+		for i := unit.start; i < unit.end; i++ {
+			rowKept[i] = kept[u]
 		}
 	}
 	out := make([]string, 0, keep)
 	for i := 0; i < len(header); {
 		b := header[i].block
 		if b == nil {
-			if kept[i] {
+			if rowKept[i] {
 				out = append(out, header[i].Text)
 			}
 			i++
@@ -1383,7 +1467,7 @@ func jdeFitHeader(header jdeHeader, budget, avail int) []string {
 		}
 		end, n := i, 0
 		for ; end < len(header) && header[end].block == b; end++ {
-			if kept[end] {
+			if rowKept[end] {
 				n++
 			}
 		}
@@ -1393,11 +1477,46 @@ func jdeFitHeader(header jdeHeader, budget, avail int) []string {
 				out = append(out, row.Text)
 			}
 		case n > 0:
+			// Only a fitted block can be partly kept: a caveat is one unit.
 			out = append(out, jdeRefitRows(b.refit, n)...)
 		}
 		i = end
 	}
-	return out
+	return jdePadTo(out, keep)
+}
+
+// jdeHeadUnit is what jdeFitHeader gives ground in: header rows [start, end)
+// that go together, at one rank.
+type jdeHeadUnit struct {
+	start, end int
+	rank       jdeHeadRank
+}
+
+func (u jdeHeadUnit) rows() int { return u.end - u.start }
+
+// jdeHeadUnits splits a header into the units a trim may take: every row on its
+// own — a fitted block's rows included, since its refit answers for any count of
+// them — except a caveat's, which are one unit at the rank of its most
+// important row, so that it goes no earlier than any row inside it would have.
+func jdeHeadUnits(header jdeHeader) []jdeHeadUnit {
+	units := make([]jdeHeadUnit, 0, len(header))
+	for i := 0; i < len(header); {
+		b := header[i].block
+		if !b.whole() {
+			units = append(units, jdeHeadUnit{start: i, end: i + 1, rank: header[i].Rank})
+			i++
+			continue
+		}
+		u := jdeHeadUnit{start: i, end: i, rank: header[i].Rank}
+		for ; u.end < len(header) && header[u.end].block == b; u.end++ {
+			if header[u.end].Rank < u.rank {
+				u.rank = header[u.end].Rank
+			}
+		}
+		units = append(units, u)
+		i = u.end
+	}
+	return units
 }
 
 // jdeRefitRows asks a fitted block for n rows and holds it to exactly n, so the
@@ -2129,17 +2248,20 @@ func (p jdePickList) render(bodyWidth int) (jdeHeader, *jdeLines) {
 		add(jdeHeadEssential, renderJDEField(fitted, filterLabelW, bodyWidth))
 	// A folded hint is CONTEXT: the box is the row the operator cannot do
 	// without, and jdeMinBudget lets a header mark exactly one row essential.
-	header = header.add(jdeHeadContext, filterNotes...).add(jdeHeadDecorative, "")
+	// And it is a CAVEAT (jdeHeader.addCaveat). At the widths the size contract
+	// leaves it folds to one row, which is a row; handed over as independent
+	// rows, the day a longer hint or a wider label folds it onto two, a short
+	// pane would keep its head and drop its tail on every picker at once.
+	header = header.addCaveat(jdeHeadContext, filterNotes).add(jdeHeadDecorative, "")
 	if p.Note != "" {
 		// FOLDED against the live pane rather than written straight out: these
 		// notes run to 81 cells ("Row 1 is no slot — ad-hoc storage. A claimed
 		// slot wins over the location below.") against the 51 an 80-column
 		// terminal gives, and clampToBox cut them mid-sentence with no mark.
-		// addFittedBlock so a header trim re-draws the fold into the rows it
-		// kept and marks its own cut, rather than leaving a fragment that reads
-		// as the whole note (jdeHeader.addFitted).
-		refit := func(rows int) []string { return jdeCaveatLinesIn(p.Note, bodyWidth, rows) }
-		header = header.addFitted(jdeHeadContext, jdeHeadContext, refit(0), refit).
+		// A CAVEAT, so a header trim draws the note whole or not at all rather
+		// than leaving a fragment that reads as the whole note
+		// (jdeHeader.addCaveat).
+		header = header.addCaveat(jdeHeadContext, jdeCaveatLines(p.Note, bodyWidth)).
 			add(jdeHeadDecorative, "")
 	}
 
@@ -3155,9 +3277,11 @@ func jdeCaveatLines(note string, bodyWidth int) []string {
 
 // jdeCaveatLinesIn is jdeCaveatLines drawn into at most `rows` lines, the last
 // of them marked where that drops any (foldKeepRows); zero or less is "no
-// limit". It is the refit a pinned header re-draws a caveat with when the pane
-// cannot give it every row (jdeHeader.addFitted): the header used to drop the
-// caveat's tail rows, and a caveat's tail is where the remedy falls.
+// limit". A pinned header no longer re-draws a CAVEAT this way — a caveat is
+// kept whole or dropped whole (jdeHeader.addCaveat), because a marked cut still
+// withholds the clause that qualifies it — so the row-limited form is for a
+// fitted value drawn in a caveat's shape, such as a validation message through
+// jdeCaveatLinesStyled.
 func jdeCaveatLinesIn(note string, bodyWidth, rows int) []string {
 	return jdeCaveatLinesStyled(note, bodyWidth, rows, StyleMuted)
 }

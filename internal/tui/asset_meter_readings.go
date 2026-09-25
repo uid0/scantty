@@ -330,8 +330,7 @@ func (s *AssetMeterReadingsScreen) header() jdeHeader {
 				s.readingNumWidth(), deltaW, afterW))).
 			add(jdeHeadEssential, jdeIndent+StyleMuted.Render(fitCellIf(
 				"Values "+meterDropMark+" below", s.bodyWidth()-len(jdeIndent)))).
-			addFittedBlock(jdeHeadContext, jdeCaveatLines(readingDropNote, s.bodyWidth()),
-				func(rows int) []string { return jdeCaveatLinesIn(readingDropNote, s.bodyWidth(), rows) })
+			addCaveatBlock(jdeHeadContext, jdeCaveatLines(readingDropNote, s.bodyWidth()))
 	}
 	return h.add(jdeHeadEssential, StyleMuted.Render(
 		readingGridRow("#", "Observed", "Change", "Total",

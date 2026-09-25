@@ -2096,8 +2096,7 @@ func (s *PurchaseOrderEditScreen) deleteHeader(li omsapi.PurchaseOrderItem, widt
 	if li.IsVoided {
 		// Worth knowing before the press and not worth the essential row: a
 		// voided line is already struck off, so this destroys the ghost too.
-		h = h.addFitted(jdeHeadContext, jdeHeadContext, jdeCaveatLines(poDeleteVoidedNote, width),
-			func(rows int) []string { return jdeCaveatLinesIn(poDeleteVoidedNote, width, rows) })
+		h = h.addCaveat(jdeHeadContext, jdeCaveatLines(poDeleteVoidedNote, width))
 	}
 	if total := formatMoney(li.EstimatedCost); total != "" {
 		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render("Line total on the order: "+total))
@@ -2118,8 +2117,8 @@ func (s *PurchaseOrderEditScreen) deleteHeader(li omsapi.PurchaseOrderItem, widt
 // would still be the row a short pane drops first; so the fact that must
 // survive comes first, and at 45 cells it is a single row wherever a caveat gets
 // the 49 an 80-column pane gives — drawn whole or not at all, never a fragment.
-// On a narrower pane it folds, and the header re-draws what it keeps with the
-// cut marked (jdeHeader.addFitted).
+// On a narrower pane it folds, and the header then draws it whole or not at all
+// (jdeHeader.addCaveat).
 const poDeleteVoidedNote = "Deleting also erases this line's void record."
 
 // viewDeleteLine draws the confirmation. A frame whose whole job is to name
@@ -3238,10 +3237,10 @@ const voidStandingNote = "This marks the line voided and the supplier link disco
 // list;" and stopped at 80x13. Shortening is not a fix, it only moves the
 // height, because the budget goes to zero one row at a time.
 //
-// The header now MARKS such a cut — a fitted block is re-drawn into the rows it
-// kept with an ellipsis (jdeHeader.addFitted), which voidHeader uses — and that
-// changes nothing here: a warning that says it was cut before its way back is
-// still a warning without its way back.
+// The header no longer cuts a caveat at all — it is drawn whole or not at all
+// (jdeHeader.addCaveat), which voidHeader uses — and that changes nothing here:
+// a warning dropped whole is still a warning the operator was not given, so the
+// headline has to be the one row that survives wherever this frame warns.
 //
 // So the FIRST caveat is a single row wherever it is drawn, states the loss AND
 // the way back, and is emitted first so it is the last thing dropped: wherever
@@ -3410,14 +3409,14 @@ func voidCaveatsFit(width int) bool {
 // and as jdeHeadRank makes one level up.
 func (s *PurchaseOrderEditScreen) voidHeader(li omsapi.PurchaseOrderItem, width int) jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadEssential, removalHeadline("Void: ", StyleStatusWarn, li, width))
-	// Each caveat is FITTED: a short pane re-draws it with its cut marked
-	// rather than dropping its tail rows, which read as a finished sentence
-	// (jdeHeader.addFitted). The headline is one row wherever it is drawn
+	// Each caveat is ATOMIC: a short pane draws it whole or not at all rather
+	// than dropping its tail rows, which read as a finished sentence — the
+	// search remedy once lost exactly the row holding the order's number
+	// (jdeHeader.addCaveat). The headline is one row wherever it is drawn
 	// (voidCaveatsFit), so it has no fragment to leave; the prose and the
 	// standing note are the rows this changes.
 	for _, caveat := range append(s.voidCaveats(width), voidStandingNote) {
-		h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(caveat, width),
-			func(rows int) []string { return jdeCaveatLinesIn(caveat, width, rows) })
+		h = h.addCaveatBlock(jdeHeadContext, jdeCaveatLines(caveat, width))
 	}
 	return h.add(jdeHeadDecorative, "")
 }

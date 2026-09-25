@@ -12,8 +12,8 @@ import (
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
-// A value folded across pinned-header rows is drawn WHOLE, or not at all, or
-// with its cut marked — never as a fragment reading as the whole.
+// A FITTED value folded across pinned-header rows is drawn WHOLE, or not at
+// all, or with its cut marked — never as a fragment reading as the whole.
 //
 // jdeFitHeader gives ground from the END within a rank, so a sentence folded
 // across four context rows lost its tail rows first and what was left ended on
@@ -21,8 +21,15 @@ import (
 // screen's failure frame that was the answer to the keypress: at 80x11 the pane
 // said "✗ could not tell whether Acme Fasteners &" and nothing else. The void
 // prompts' caveats lost the same way — the order void's "This cannot be undone"
-// is its last clause. Those blocks are fitted now (jdeHeader.addFitted), and a
-// short pane re-draws them into the rows it has with foldKeepRows' ellipsis.
+// is its last clause. Those blocks were fitted (jdeHeader.addFitted), so a short
+// pane re-drew them into the rows it had with foldKeepRows' ellipsis.
+//
+// CAVEATS HAVE LEFT THIS SWEEP. A caveat re-drawn with its cut marked still
+// withholds the clause that qualifies it, so a caveat is now kept whole or
+// dropped whole (jdeHeader.addCaveat) and header_caveat_test.go holds that; what
+// is left here is the values whose HEAD stands on its own — an answer to a
+// keypress, a failure body, the order pad's omitted-lines warning — which are
+// still fitted and still marked.
 //
 // The VALUES are read off each screen's own content functions rather than
 // written here, so a reworded note is measured as it is drawn. The frames are
@@ -78,11 +85,17 @@ func TestHeaderFold_AFoldedValueIsWholeAbsentOrMarked(t *testing.T) {
 		_ = found
 	}
 	// The sweep must reach the state it is about on the screens it was written
-	// for, or it passes by never cutting anything.
+	// for, or it passes by never cutting anything. The void prompts, the item
+	// form's chain and kit guidance, the level list and the asset document,
+	// meter, reading and scan-review screens used to be pinned here too; each
+	// folded only a CAVEAT, which is now dropped whole instead of cut and marked,
+	// so none of them can draw a value short of whole any more and
+	// TestJDEHeader_ACaveatIsDrawnWholeOrNotAtAll pins the trim on them instead.
+	// The supplier form stays: its reload caveat went the same way, but the
+	// stale refusal above it is the server's own sentence and is still FITTED
+	// (jdeHeaderFittedFolds).
 	for _, screen := range []string{"PurchaseOrderAddLineScreen", "PurchaseOrderDetailScreen",
-		"PurchaseOrderEditScreen", "PurchaseOrderCreateScreen", "InventoryItemFormScreen",
-		"StorageSlotGenerateScreen", "AssetDocumentsScreen", "AssetMetersScreen",
-		"AssetMeterReadingsScreen", "WorkOrderScanReviewScreen", "ItemSupplierFormScreen"} {
+		"PurchaseOrderCreateScreen", "ItemSupplierFormScreen"} {
 		if cut[screen] == 0 {
 			t.Errorf("%s: no pane drew a folded header value short of whole, so the "+
 				"trim was never exercised there", screen)
@@ -113,8 +126,9 @@ func headerFoldAddLineFailure(t *testing.T) Screen {
 	return s
 }
 
-// headerFoldValues is every value the screen folds into its pinned header, as
-// plain text, asked of the screen's own content functions.
+// headerFoldValues is every FITTED value the screen folds into its pinned
+// header, as plain text, asked of the screen's own content functions. A caveat
+// is not one (header_caveat_test.go).
 //
 // THE FOUR ASSET/SCAN SCREENS JOINED IT AFTER THE FACT, and how they were
 // missed is the lesson: each folded its caveat correctly with jdeCaveatLines and
@@ -137,25 +151,12 @@ func headerFoldValues(s Screen) []string {
 			return []string{v.standingNote()}
 		}
 	case *PurchaseOrderDetailScreen:
-		return []string{poVoidOrderCaveat}
-	case *PurchaseOrderEditScreen:
-		return append(v.voidCaveats(v.bodyWidth()), voidStandingNote)
-	case *InventoryItemFormScreen:
-		unit := v.baseUnitValue()
-		return []string{chainGuidance(unit), chainEmptyDetail(unit), kitListGuidance}
-	case *StorageSlotGenerateScreen:
-		return []string{levelListDetail}
-	case *AssetDocumentsScreen:
-		return []string{supersedeCaveat}
-	case *AssetMetersScreen:
-		return []string{adjustCaveat, newMeterCaveat, meterDropNote}
-	case *AssetMeterReadingsScreen:
-		return []string{readingDropNote}
-	case *WorkOrderScanReviewScreen:
-		return []string{woScanImageCaveat}
+		if warn := v.orderPadWarning(); warn != "" {
+			return []string{warn}
+		}
 	case *ItemSupplierFormScreen:
 		if v.stale != nil {
-			return []string{v.stale.Message, itemSupplierReloadCaveat}
+			return []string{v.stale.Message}
 		}
 	}
 	return nil
