@@ -491,3 +491,54 @@ What they pin that a hand-written page does not:
   ordered only because the rows were inserted in order; on a live database two
   pages can overlap or skip a row, which is why the terminal skips a row it has
   already loaded. That is an OMS defect and nothing here can repair the skip.
+
+## Fixtures and refill requests
+
+| file | request | status | OMS builder |
+|---|---|---|---|
+| `fixture_detail.json` | `GET /api/inventory/fixtures/{id}/` | 200 | `inventory.serializers.FixtureDetailSerializer` |
+| `location_fixtures.json` | `GET /api/inventory/locations/{id}/fixtures/` | 200 | `LocationViewSet.fixtures` → `FixtureSerializer` |
+| `fixture_refill_requests_pending.json` | `GET /api/inventory/fixture-refill-requests/?status=pending` | 200 | `FixtureRefillRequestSerializer` |
+| `fixture_refill_requests_for_fixture.json` | the same, `?fixture={id}&status=pending` | 200 | same |
+| `fixture_scan.json` | `POST /api/inventory/fixtures/{id}/scan/` `{"notes": "Towels ran out during the class"}` | **201** | `FixtureViewSet.scan` |
+| `fixture_scan_inactive.json` | the same, on an INACTIVE fixture, `{}` | **400** | a hand-built `Response({"error": …})` |
+| `fixture_refill_request_resolve.json` | `POST /api/inventory/fixture-refill-requests/{id}/resolve/` `{}` | 200 | `FixtureRefillRequestViewSet.resolve` |
+| `fixture_refill_request_resolve_completed.json` | the same request again | **400** | a hand-built `Response({"error": …})` |
+| `fixture_refill_request_resolve_empty_notes.json` | `…/resolve/` `{"notes": ""}` on a request whose reporter wrote a note | 200 | same |
+| `fixture_resolve_all_unauthenticated.json` | `POST /api/inventory/fixtures/{id}/resolve_all/` with **no** `Authorization` | **401** | DRF's handler, standardized envelope |
+| `fixture_resolve_all.json` | `…/resolve_all/` `{}` | 200 | `FixtureViewSet.resolve_all` |
+| `fixture_resolve_all_nothing_pending.json` | the same again, nothing pending | 200 | same |
+| `fixture_resolve_all_with_notes.json` | `…/resolve_all/` `{"notes": "Refilled from the storeroom"}` over two requests carrying reporters' notes | 200 | same |
+| `fixture_not_found.json` | `GET /api/inventory/fixtures/<a UUID that does not exist>/` | **404** | DRF's handler, standardized envelope |
+| `fixture_not_a_uuid.json` | `GET /api/inventory/fixtures/5/` | **404** | same |
+
+Recorded 2026-09-14 against OpenMakerSuite remote `main` at commit
+`7317d64ae99fd67282709b6ca2ccb5c963b6e968` (tree `a57d67e5…`), a clean clone on
+PostgreSQL, authenticated as a superuser (a plain account without a membership
+or role cannot sign in at all). The location and item pk sequences were set to
+seven digits first. One location carries three fixtures — one with a tag and a
+description, one with a null tag, one INACTIVE — plus a second location's
+fixture; the first fixture held an anonymous pending request, a signed-in
+pending one with a note, and a completed one.
+
+What they pin that a hand-written map does not:
+
+* every `id`, `fixture` and `refill_item` is a **string** UUID and `location` is
+  a **number** — `Fixture`, `FixtureRefillRequest` and `InventoryItem` declare
+  `UUIDField` pks and `Location` declares none;
+* the scan reply is a **refill request**, not a fixture — the client this
+  replaced decoded it as a fixture against a hand-written body;
+* an anonymous request has `requested_by` **""** and `requested_actor`
+  **"Anonymous"**, with `requested_username` null;
+* the detail's `recent_refill_requests` mixes statuses (a **completed** request
+  sits beside the pending ones), so it is not the pending queue;
+* the location's list is a **bare array** and omits the inactive fixture;
+* `resolve` with `{"notes": ""}` **erases** the reporter's note, and
+  `resolve_all` with notes **overwrites** every pending request's note — both
+  came back that way, which is what the terminal's prompts state;
+* resolving nothing is a **200** reading `Resolved 0 pending refill request(s)`;
+* refusals come in the hand-built `{"error": "<prose>"}` shape AND the coded
+  envelope from one viewset.
+
+`internal/tui/fixture_refills_lab_test.go` (build tag `omslab`) re-measures the
+two notes behaviours through the terminal's own screens against a live backend.

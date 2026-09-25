@@ -704,7 +704,7 @@ func TestReconcileEntry_TheLocationDetailFooterFitsThePane(t *testing.T) {
 	}})
 	pane := clampToBox(s.View(), screenBodyWidth(80), 60)
 	for _, want := range []string{
-		"c count", "p problems", "g gen-QR", "E edit", "x delete", "r refresh", "esc back",
+		"c count", "p problems", "f fixtures", "g gen-QR", "E edit", "x delete", "r refresh", "esc back",
 	} {
 		if !strings.Contains(pane, want) {
 			t.Errorf("the clipped pane lost %q from the footer:\n%s", want, pane)

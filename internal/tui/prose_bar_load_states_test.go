@@ -147,7 +147,7 @@ type proseLoadPerTab interface {
 }
 
 func proseLoadScreens() []proseLoadScreen {
-	return []proseLoadScreen{
+	return append(proseBarFixtureLoadScreens(), []proseLoadScreen{
 		{name: "analytics pulse", recv: "AnalyticsPulseScreen", loaded: "analytics pulse", reload: "r", refused: true,
 			fresh: func(d Deps) proseBarScreen { return NewAnalyticsPulseScreen(d) }},
 		{name: "asset detail", recv: "AssetDetailScreen", loaded: "asset detail/components", reload: "r",
@@ -314,7 +314,7 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen {
 				return NewAssetPartsScreen(d, "a-1", "Haas VF-2SS vertical machining centre")
 			}},
-	}
+	}...)
 }
 
 // proseLoadGatewayPage is what the failing backend answers with: nginx's 502
