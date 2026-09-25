@@ -91,6 +91,9 @@ func TestHeaderFold_AFoldedValueIsWholeAbsentOrMarked(t *testing.T) {
 	// folded only a CAVEAT, which is now dropped whole instead of cut and marked,
 	// so none of them can draw a value short of whole any more and
 	// TestJDEHeader_ACaveatIsDrawnWholeOrNotAtAll pins the trim on them instead.
+	// The supplier form stays: its reload caveat went the same way, but the
+	// stale refusal above it is the server's own sentence and is still FITTED
+	// (jdeHeaderFittedFolds).
 	for _, screen := range []string{"PurchaseOrderAddLineScreen", "PurchaseOrderDetailScreen",
 		"PurchaseOrderCreateScreen", "ItemSupplierFormScreen"} {
 		if cut[screen] == 0 {
@@ -153,7 +156,7 @@ func headerFoldValues(s Screen) []string {
 		}
 	case *ItemSupplierFormScreen:
 		if v.stale != nil {
-			return []string{v.stale.Message, itemSupplierReloadCaveat}
+			return []string{v.stale.Message}
 		}
 	}
 	return nil

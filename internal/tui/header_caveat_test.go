@@ -123,7 +123,7 @@ var jdeHeaderFoldRoots = []string{"jdeWrapNote", "pickerWrap"}
 // here for one fitted value could hand a CAVEAT to addFitted beside it and this
 // sweep would not tell the two apart. The pane sweep below cannot catch that
 // either, since it reads caveats off the blocks the builder declared — so a new
-// fold in one of these four builders is a reason to read the builder.
+// fold in one of these five builders is a reason to read the builder.
 var jdeHeaderFittedFolds = map[string]string{
 	"PurchaseOrderAddLineScreen/headerLines": "the note is the screen's ANSWER to the last " +
 		"keypress, and its first row is the header's one essential row — an answer cut after " +
@@ -137,6 +137,9 @@ var jdeHeaderFittedFolds = map[string]string{
 	"PurchaseOrderDetailScreen/orderPadHeader": "the omitted-lines warning leads with the COUNT, " +
 		"which is the essential row and stands on its own; the names after it are a list, and " +
 		"a list cut with its cut marked still says how many went",
+	"ItemSupplierFormScreen/formHeader": "the stale refusal is the server's own sentence, and " +
+		"its head — that nothing was saved, and why — stands on its own; the reload caveat " +
+		"beside it is a caveat and goes to addCaveat, whole or not at all",
 }
 
 // jdeHeaderRowFolds are the header sites that hand a fold to add or addBlock —

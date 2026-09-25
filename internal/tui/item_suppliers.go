@@ -1615,7 +1615,9 @@ const (
 // The server's sentence is the complete account and is unbounded prose, so it
 // goes in as a FITTED block: a short pane re-draws it at fewer rows with the cut
 // marked (jdeHeader.addFitted) rather than leaving a fragment that reads as the
-// whole. Nothing here is essential. The two things the operator cannot act
+// whole. The reload caveat under it is a CAVEAT, not an account, so it is drawn
+// whole or given up whole (jdeHeader.addCaveat): half of a warning about what
+// Ctrl-R discards reads as a different warning. Nothing here is essential. The two things the operator cannot act
 // without — that nothing was saved, and the key that reloads — ride the status
 // row and the bar, which no budget trims; the rows kept for the body are what
 // keeps the field under the cursor on the pane.
@@ -1630,8 +1632,7 @@ func (s *ItemSupplierFormScreen) formHeader() jdeHeader {
 	}
 	h := jdeHeader{}.addFitted(jdeHeadContext, jdeHeadContext, styled(0), styled)
 	if !s.stale.Deleted() {
-		h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(itemSupplierReloadCaveat, width),
-			func(rows int) []string { return jdeCaveatLinesIn(itemSupplierReloadCaveat, width, rows) })
+		h = h.addCaveat(jdeHeadContext, jdeCaveatLines(itemSupplierReloadCaveat, width))
 	}
 	return h.add(jdeHeadDecorative, "")
 }
